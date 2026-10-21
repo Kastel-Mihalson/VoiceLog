@@ -1,7 +1,10 @@
 name: Build APK
 
 on:
+  # Запуск только когда изменения попадают в main (слияние ветки или прямой push в main).
   push:
+    branches: [main]
+  # Ручной запуск кнопкой Run workflow во вкладке Actions.
   workflow_dispatch:
 
 jobs:
