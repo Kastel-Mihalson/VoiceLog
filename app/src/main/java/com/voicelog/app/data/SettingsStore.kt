@@ -27,6 +27,14 @@ class SettingsStore(context: Context) {
     private val _auto = MutableStateFlow(prefs.getBoolean("auto_listen", true))
     val autoListen: StateFlow<Boolean> = _auto
 
+    private val _autoStart = MutableStateFlow(prefs.getBoolean("auto_start", true))
+    val autoStartRecording: StateFlow<Boolean> = _autoStart
+
+    fun setAutoStartRecording(value: Boolean) {
+        _autoStart.value = value
+        prefs.edit().putBoolean("auto_start", value).apply()
+    }
+
     private val _engine = MutableStateFlow(
         runCatching { SpeechEngine.valueOf(prefs.getString("engine", null) ?: SpeechEngine.GOOGLE.name) }
             .getOrDefault(SpeechEngine.GOOGLE)

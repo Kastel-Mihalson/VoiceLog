@@ -18,6 +18,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -32,7 +34,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.Card
@@ -73,8 +74,9 @@ import com.voicelog.app.Status
 private val ListeningColor = Color(0xFFE5484D)
 
 @Composable
-fun HomeScreen(vm: MainViewModel, onMenu: () -> Unit) {
+fun HomeScreen(vm: MainViewModel) {
     val ui by vm.home.collectAsState()
+    val autoStart by vm.settings.autoStartRecording.collectAsState()
     val ctx = LocalContext.current
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -94,6 +96,14 @@ fun HomeScreen(vm: MainViewModel, onMenu: () -> Unit) {
         if (granted) vm.onMicClick() else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
     }
 
+    // При открытии приложения сразу включаем запись голоса (один раз за запуск).
+    LaunchedEffect(Unit) {
+        if (!vm.autoStartHandled) {
+            vm.autoStartHandled = true
+            if (autoStart && vm.home.value.status == Status.IDLE) onMic()
+        }
+    }
+
     var typed by remember { mutableStateOf("") }
     val sendTyped: () -> Unit = {
         if (typed.isNotBlank()) {
@@ -104,14 +114,10 @@ fun HomeScreen(vm: MainViewModel, onMenu: () -> Unit) {
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
                 title = { Text("Голосовой дневник") },
-                navigationIcon = {
-                    IconButton(onClick = onMenu) {
-                        Icon(Icons.Default.Menu, contentDescription = "Меню")
-                    }
-                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background
                 )
@@ -236,8 +242,6 @@ private fun HintCard() {
                 "• «Добавь в раздел траты покупка чая стоимостью 254 рубля 55 копеек»",
                 style = MaterialTheme.typography.bodyMedium
             )
-            Text("• «Отжимания 30 раз»", style = MaterialTheme.typography.bodyMedium)
-            Text("• «Выпил таблетку»", style = MaterialTheme.typography.bodyMedium)
             Text(
                 "Если чего-то не хватит, приложение уточнит. Чтобы прервать — скажите «отмена».",
                 style = MaterialTheme.typography.bodySmall,

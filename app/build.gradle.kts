@@ -13,12 +13,30 @@ android {
         applicationId = "com.voicelog.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
+        // Для обновления поверх установленной версии versionCode должен расти:
+        // в GitHub Actions берём номер запуска сборки.
+        versionCode = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
         versionName = "1.0"
     }
 
+    // Одна и та же подпись у всех сборок. Благодаря этому новый APK устанавливается
+    // поверх старого без удаления, и данные приложения сохраняются.
+    // Без общего ключа каждая сборка в GitHub Actions подписывалась бы новым случайным ключом.
+    signingConfigs {
+        create("shared") {
+            storeFile = file("voicelog.keystore")
+            storePassword = "android"
+            keyAlias = "voicelog"
+            keyPassword = "android"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("shared")
+        }
         release {
+            signingConfig = signingConfigs.getByName("shared")
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

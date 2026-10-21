@@ -5,7 +5,7 @@ import androidx.room.ForeignKey
 import androidx.room.Index
 import androidx.room.PrimaryKey
 
-/** Раздел, созданный пользователем: «Траты», «Отжимания», «Таблетки»… */
+/** Раздел, созданный пользователем: «Траты», «Игры», «Спорт»… */
 @Entity(tableName = "sections")
 data class Section(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,

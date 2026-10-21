@@ -15,8 +15,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Menu
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -47,24 +46,21 @@ import com.voicelog.app.data.ThemeMode
 import com.voicelog.app.voice.ModelState
 
 @Composable
-fun SettingsScreen(vm: MainViewModel, onMenu: () -> Unit) {
+fun SettingsScreen(vm: MainViewModel) {
     val theme by vm.settings.themeMode.collectAsState()
     val speak by vm.settings.speakReplies.collectAsState()
     val auto by vm.settings.autoListen.collectAsState()
     val sections by vm.sections.collectAsState()
     val engine by vm.settings.engine.collectAsState()
+    val autoStart by vm.settings.autoStartRecording.collectAsState()
     val model by vm.modelState.collectAsState()
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
                 title = { Text("Настройки") },
-                navigationIcon = {
-                    IconButton(onClick = onMenu) {
-                        Icon(Icons.Default.Menu, contentDescription = "Меню")
-                    }
-                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background
                 )
@@ -149,6 +145,13 @@ fun SettingsScreen(vm: MainViewModel, onMenu: () -> Unit) {
 
             SettingsCard("Голос") {
                 SwitchRow(
+                    title = "Запись при открытии",
+                    subtitle = "Микрофон включается сразу, как только вы открыли приложение",
+                    checked = autoStart,
+                    onChange = vm.settings::setAutoStartRecording
+                )
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
+                SwitchRow(
                     title = "Озвучивать ответы",
                     subtitle = "Приложение голосом подтверждает запись и задаёт вопросы",
                     checked = speak,
@@ -188,7 +191,16 @@ fun SettingsScreen(vm: MainViewModel, onMenu: () -> Unit) {
                 Text("4. Уточнения", fontWeight = FontWeight.SemiBold)
                 Text(
                     "Если не понятен раздел или число, приложение спросит. " +
-                        "Скажите «отмена», чтобы прервать.",
+                        "Если у двух разделов совпадают слова-подсказки, оно не угадывает, " +
+                        "а спрашивает, в какой раздел записать. Чтобы не спрашивать, " +
+                        "скажите «в раздел …» с названием. Скажите «отмена», чтобы прервать.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Text("5. Новый раздел голосом", fontWeight = FontWeight.SemiBold)
+                Text(
+                    "«Создай раздел Игры» — приложение создаст раздел и спросит единицу измерения. " +
+                        "Можно сразу всё одной фразой: «Создай раздел Игры единица минуты слова играл партия». " +
+                        "Единицы: рубли, раз, штуки, минуты, часы, дни, километры, граммы, литры и другие.",
                     style = MaterialTheme.typography.bodyMedium
                 )
             }

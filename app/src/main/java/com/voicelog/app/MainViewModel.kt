@@ -18,6 +18,7 @@ import com.voicelog.app.data.SpeechEngine
 import com.voicelog.app.util.Fmt
 import com.voicelog.app.voice.ModelState
 import com.voicelog.app.voice.ParseResult
+import com.voicelog.app.voice.SectionCommand
 import com.voicelog.app.voice.SectionRef
 import com.voicelog.app.voice.VoiceParser
 import com.voicelog.app.voice.VoskModelManager
@@ -64,6 +65,12 @@ internal data class Reply(
 )
 
 internal sealed interface Pending {
+    /** Просили назвать новый раздел. */
+    data object NeedSectionName : Pending
+
+    /** Раздел создан, ждём единицу измерения. */
+    data class NeedUnit(val sectionId: Long, val name: String) : Pending
+
     data class NeedSection(val description: String, val cents: Long?) : Pending
     data class NeedValue(val section: SectionRef, val description: String) : Pending
 }
@@ -83,6 +90,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _home = MutableStateFlow(HomeUi())
     val home: StateFlow<HomeUi> = _home.asStateFlow()
+
+    /** Автозапуск записи при открытии приложения выполняется один раз за запуск. */
+    var autoStartHandled = false
 
     private var pending: Pending? = null
     private var recognizer: SpeechRecognizer? = null
@@ -527,12 +537,49 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             return Reply("Отменено.", MessageKind.INFO)
         }
         val list = dao.sectionsOnce()
-        if (list.isEmpty()) {
-            return Reply("Пока нет ни одного раздела. Создайте его в меню «Записи».", MessageKind.ERROR)
-        }
         val refs = list.map { it.toRef() }
 
+        // Команда «Создай раздел …» работает всегда и прерывает любой уточняющий вопрос.
+        val awaitingName = pending is Pending.NeedSectionName
+        val create = SectionCommand.parse(if (awaitingName) "создай раздел $text" else text)
+        if (create != null) return handleCreate(create, list, refs)
+
+        if (list.isEmpty()) {
+            return Reply(
+                "Пока нет ни одного раздела. Скажите «Создай раздел …» или создайте его на вкладке «Записи».",
+                MessageKind.ERROR
+            )
+        }
+
         return when (val p = pending) {
+            is Pending.NeedSectionName -> {
+                // Ответ не распознан как название — спросим ещё раз.
+                Reply("Как назвать раздел? Скажите только название.", MessageKind.QUESTION, listenNext = true)
+            }
+
+            is Pending.NeedUnit -> {
+                val unit = SectionCommand.mapUnit(text)
+                val section = list.firstOrNull { it.id == p.sectionId }
+                when {
+                    section == null -> {
+                        pending = null
+                        Reply("Раздел «${p.name}» не найден.", MessageKind.ERROR)
+                    }
+                    unit == null -> Reply(
+                        "Не понял единицу. Назовите: рубли, раз, штуки, минуты, часы, дни, километры " +
+                            "или «без единицы».",
+                        MessageKind.QUESTION,
+                        listenNext = true
+                    )
+                    else -> {
+                        dao.updateSection(section.copy(unit = unit))
+                        pending = null
+                        val shown = if (unit.isBlank()) "без единицы" else unit
+                        Reply("Готово: в разделе «${section.name}» единица — $shown.", MessageKind.SAVED)
+                    }
+                }
+            }
+
             null -> handleParse(VoiceParser.parse(text, refs), list)
 
             is Pending.NeedSection -> {
@@ -565,6 +612,53 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Создание раздела по голосовой команде. */
+    private suspend fun handleCreate(cmd: SectionCommand.Create, list: List<Section>, refs: List<SectionRef>): Reply {
+        pending = null
+        if (cmd.name.isBlank()) {
+            pending = Pending.NeedSectionName
+            return Reply("Как назвать раздел?", MessageKind.QUESTION, listenNext = true)
+        }
+        list.firstOrNull { SectionCommand.sameName(it.name, cmd.name) }?.let {
+            return Reply("Раздел «${it.name}» уже есть.", MessageKind.INFO)
+        }
+
+        val id = dao.insertSection(
+            Section(
+                name = cmd.name,
+                unit = cmd.unit ?: "",
+                keywords = cmd.keywords.joinToString(","),
+                askValue = true
+            )
+        )
+
+        // Предупреждаем, если слова уже используются в другом разделе.
+        val conflicts = SectionCommand.conflicts(cmd.name, cmd.keywords, refs)
+        val warning = if (conflicts.isEmpty()) "" else
+            "\nВнимание: " + conflicts.joinToString("; ") { (word, other) ->
+                "«$word» уже есть в разделе «$other»"
+            } + ". Если фраза подойдёт обоим, приложение спросит, куда записать."
+
+        val wordsInfo = if (cmd.keywords.isEmpty()) "" else " Слова: ${cmd.keywords.joinToString(", ")}."
+        return if (cmd.unit != null) {
+            val shown = if (cmd.unit.isBlank()) "без единицы" else cmd.unit
+            Reply(
+                "Создан раздел «${cmd.name}», единица: $shown.$wordsInfo$warning",
+                MessageKind.SAVED,
+                spoken = "Создал раздел ${cmd.name}"
+            )
+        } else {
+            pending = Pending.NeedUnit(id, cmd.name)
+            Reply(
+                "Создан раздел «${cmd.name}».$wordsInfo$warning\n" +
+                    "В чём считаем: рубли, раз, штуки, минуты, часы, дни? Или скажите «без единицы».",
+                MessageKind.QUESTION,
+                spoken = "Создал раздел ${cmd.name}. В чём считаем: рубли, раз, штуки, минуты, часы, дни?",
+                listenNext = true
+            )
+        }
+    }
+
     private suspend fun handleParse(result: ParseResult, list: List<Section>): Reply = when (result) {
         is ParseResult.Empty ->
             Reply("Не расслышал команду. Попробуйте ещё раз.", MessageKind.INFO)
@@ -572,11 +666,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         is ParseResult.NeedSection -> {
             pending = Pending.NeedSection(result.description, result.valueCents)
             val what = if (result.description.isBlank()) "" else " «${result.description}»"
-            Reply(
-                "В какой раздел добавить$what? Доступны: ${sectionNames(list)}.",
-                MessageKind.QUESTION,
-                listenNext = true
-            )
+            if (result.candidates.isNotEmpty()) {
+                // Одинаковые слова распознавания у нескольких разделов — не угадываем.
+                val names = result.candidates.joinToString(" или ") { "«${it.name}»" }
+                Reply(
+                    "Фраза подходит к нескольким разделам: $names. В какой добавить$what?",
+                    MessageKind.QUESTION,
+                    spoken = "Фраза подходит к нескольким разделам: " +
+                        result.candidates.joinToString(" или ") { it.name } + ". В какой добавить?",
+                    listenNext = true
+                )
+            } else {
+                Reply(
+                    "В какой раздел добавить$what? Доступны: ${sectionNames(list)}.",
+                    MessageKind.QUESTION,
+                    listenNext = true
+                )
+            }
         }
 
         is ParseResult.NeedValue -> {

@@ -6,6 +6,9 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.sqlite.db.SupportSQLiteDatabase
 
+// ВАЖНО: если когда-нибудь менять структуру таблиц, нужно увеличить version и написать
+// Migration (addMigrations). Нельзя использовать fallbackToDestructiveMigration —
+// он стирает все записи пользователя при обновлении.
 @Database(entities = [Section::class, LogEntry::class], version = 1, exportSchema = false)
 abstract class AppDatabase : RoomDatabase() {
 
@@ -23,20 +26,13 @@ abstract class AppDatabase : RoomDatabase() {
                     "voicelog.db"
                 )
                     .addCallback(object : RoomDatabase.Callback() {
-                        // При первом запуске создаём три примера разделов.
+                        // При самой первой установке создаём один раздел — «Траты».
+                        // Остальные пользователь создаёт сам (в «Записи» или голосом).
                         override fun onCreate(db: SupportSQLiteDatabase) {
                             super.onCreate(db)
                             db.execSQL(
                                 "INSERT INTO sections (name, unit, keywords, askValue) " +
                                     "VALUES ('Траты', '₽', 'потратил,купил,расход,покупка', 1)"
-                            )
-                            db.execSQL(
-                                "INSERT INTO sections (name, unit, keywords, askValue) " +
-                                    "VALUES ('Отжимания', 'раз', 'отжался,подход', 1)"
-                            )
-                            db.execSQL(
-                                "INSERT INTO sections (name, unit, keywords, askValue) " +
-                                    "VALUES ('Таблетки', 'шт', 'таблетка,лекарство,принял', 0)"
                             )
                         }
                     })
