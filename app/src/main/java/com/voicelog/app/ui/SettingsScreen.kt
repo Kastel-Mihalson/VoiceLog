@@ -17,13 +17,16 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
@@ -39,7 +42,9 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.voicelog.app.MainViewModel
+import com.voicelog.app.data.SpeechEngine
 import com.voicelog.app.data.ThemeMode
+import com.voicelog.app.voice.ModelState
 
 @Composable
 fun SettingsScreen(vm: MainViewModel, onMenu: () -> Unit) {
@@ -47,6 +52,8 @@ fun SettingsScreen(vm: MainViewModel, onMenu: () -> Unit) {
     val speak by vm.settings.speakReplies.collectAsState()
     val auto by vm.settings.autoListen.collectAsState()
     val sections by vm.sections.collectAsState()
+    val engine by vm.settings.engine.collectAsState()
+    val model by vm.modelState.collectAsState()
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -76,6 +83,68 @@ fun SettingsScreen(vm: MainViewModel, onMenu: () -> Unit) {
                 ThemeRow("Светлая", theme == ThemeMode.LIGHT) { vm.settings.setTheme(ThemeMode.LIGHT) }
                 ThemeRow("Тёмная", theme == ThemeMode.DARK) { vm.settings.setTheme(ThemeMode.DARK) }
                 ThemeRow("Как в системе", theme == ThemeMode.SYSTEM) { vm.settings.setTheme(ThemeMode.SYSTEM) }
+            }
+
+            SettingsCard("Распознавание речи") {
+                ThemeRow(
+                    "Vosk — офлайн, на телефоне",
+                    engine == SpeechEngine.VOSK
+                ) {
+                    if (model is ModelState.Ready) vm.settings.setEngine(SpeechEngine.VOSK)
+                }
+                ThemeRow(
+                    "Google — встроенный сервис",
+                    engine == SpeechEngine.GOOGLE
+                ) { vm.settings.setEngine(SpeechEngine.GOOGLE) }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
+
+                when (val m = model) {
+                    is ModelState.Missing -> {
+                        Text(
+                            "Для Vosk нужно один раз скачать русскую модель (около 45 МБ, нужен интернет). " +
+                                "После этого распознавание работает без интернета.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Button(onClick = vm::downloadModel) { Text("Скачать модель") }
+                    }
+
+                    is ModelState.Downloading -> {
+                        Text(
+                            "${m.phase}… ${m.percent}%",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        LinearProgressIndicator(
+                            progress = { m.percent / 100f },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text(
+                            "Не закрывайте приложение, пока идёт загрузка.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    is ModelState.Ready -> {
+                        Text("Модель установлена и готова к работе.", style = MaterialTheme.typography.bodyMedium)
+                        OutlinedButton(onClick = vm::deleteModel) { Text("Удалить модель") }
+                    }
+
+                    is ModelState.Failed -> {
+                        Text(
+                            "Не удалось скачать модель: ${m.message}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        Button(onClick = vm::downloadModel) { Text("Повторить") }
+                    }
+                }
+                Text(
+                    "Vosk выдаёт числа словами («двести пятьдесят четыре рубля») — приложение это понимает. " +
+                        "Говорите чётко и без длинных пауз внутри фразы.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
             }
 
             SettingsCard("Голос") {

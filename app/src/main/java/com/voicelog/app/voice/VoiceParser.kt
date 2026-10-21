@@ -82,6 +82,12 @@ object VoiceParser {
         s = s.replace(Regex("[^\\p{L}\\p{N}.₽ ]"), " ")
         s = s.replace(Regex("(?<!\\d)\\.|\\.(?!\\d)"), " ")
         s = s.replace(Regex("\\s+"), " ").trim()
+        // «1 500» / «12 500 000» (пробел как разделитель тысяч) -> «1500» / «12500000»
+        s = s.replace(Regex("(?<![\\d.])(\\d{1,3})((?: \\d{3})+)(?![\\d])")) {
+            it.groupValues[1] + it.groupValues[2].replace(" ", "")
+        }
+        // «1.500» (точка как разделитель тысяч) -> «1500»
+        s = s.replace(Regex("(?<![\\d.])(\\d{1,3})\\.(\\d{3})(?![\\d.])"), "$1$2")
         return RussianNumbers.replaceWords(s)
     }
 

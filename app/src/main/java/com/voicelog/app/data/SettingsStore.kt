@@ -6,6 +6,9 @@ import kotlinx.coroutines.flow.StateFlow
 
 enum class ThemeMode { LIGHT, DARK, SYSTEM }
 
+/** Чем распознаём речь: офлайн-модель Vosk или встроенный сервис Google. */
+enum class SpeechEngine { VOSK, GOOGLE }
+
 /** Простое хранилище настроек в SharedPreferences. */
 class SettingsStore(context: Context) {
 
@@ -23,6 +26,17 @@ class SettingsStore(context: Context) {
 
     private val _auto = MutableStateFlow(prefs.getBoolean("auto_listen", true))
     val autoListen: StateFlow<Boolean> = _auto
+
+    private val _engine = MutableStateFlow(
+        runCatching { SpeechEngine.valueOf(prefs.getString("engine", null) ?: SpeechEngine.GOOGLE.name) }
+            .getOrDefault(SpeechEngine.GOOGLE)
+    )
+    val engine: StateFlow<SpeechEngine> = _engine
+
+    fun setEngine(value: SpeechEngine) {
+        _engine.value = value
+        prefs.edit().putString("engine", value.name).apply()
+    }
 
     fun setTheme(mode: ThemeMode) {
         _theme.value = mode
