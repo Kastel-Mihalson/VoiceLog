@@ -16,8 +16,15 @@ sealed interface ParseResult {
     /** Всё понятно, можно сохранять. valueCents — сумма/количество в сотых долях. */
     data class Ready(val section: SectionRef, val description: String, val valueCents: Long) : ParseResult
 
-    /** Не удалось определить раздел. */
-    data class NeedSection(val description: String, val valueCents: Long?) : ParseResult
+    /**
+     * Не удалось определить раздел. Если [candidates] не пуст — фраза одинаково подходит
+     * к нескольким разделам (совпали слова распознавания), и нужно спросить, к какому.
+     */
+    data class NeedSection(
+        val description: String,
+        val valueCents: Long?,
+        val candidates: List<SectionRef> = emptyList()
+    ) : ParseResult
 
     /** Раздел понятен, но нет суммы/количества. */
     data class NeedValue(val section: SectionRef, val description: String) : ParseResult
@@ -60,8 +67,7 @@ object VoiceParser {
     private val LEAD = setOf(
         "пожалуйста", "добавь", "добавить", "запиши", "записать", "внеси", "внести",
         "занеси", "отметь", "потратил", "потратила", "купил", "купила",
-        "выпил", "выпила", "принял", "приняла", "сделал", "сделала",
-        "отжался", "отжалась", "отжимался", "отжималась",
+        "сделал", "сделала",
         "в", "во", "на", "за", "по", "и", "что", "это", "мне", "еще",
         "раздел", "раздела", "разделе"
     )
@@ -108,6 +114,7 @@ object VoiceParser {
 
         return when (pick) {
             is Pick.Found -> complete(pick.section, description, amount?.cents)
+            is Pick.Ambiguous -> ParseResult.NeedSection(description, amount?.cents, pick.sections)
             else -> ParseResult.NeedSection(description, amount?.cents)
         }
     }
@@ -157,12 +164,19 @@ object VoiceParser {
 
     // ---------- раздел ----------
 
-    private class Hit(val section: SectionRef, val score: Int, val removal: IntRange?)
+    /**
+     * score — «вес» совпадения: 100 — явное «в раздел X», 20 — упомянуто название раздела,
+     * 10 — сработало слово-подсказка. len — длина слова (выбирает лучшее слово внутри
+     * одного раздела, но НЕ участвует в сравнении разделов между собой).
+     */
+    private class Hit(val section: SectionRef, val score: Int, val len: Int, val removal: IntRange?)
 
     private sealed interface Pick {
         class Found(val section: SectionRef, val removal: IntRange?) : Pick
         data object None : Pick
-        data object Ambiguous : Pick
+
+        /** Несколько разделов подошли одинаково хорошо — нужно спросить. */
+        class Ambiguous(val sections: List<SectionRef>) : Pick
     }
 
     private fun stem(word: String): String = when {
@@ -197,22 +211,29 @@ object VoiceParser {
                 val plain = Regex("(?<![\\p{L}\\p{N}])$body").find(text)
 
                 val hit: Hit? = when {
-                    explicit != null -> Hit(sec, 100 + alias.length, explicit.range)
+                    explicit != null -> Hit(sec, 100, alias.length, explicit.range)
                     plain != null -> Hit(
                         sec,
-                        (if (isName) 20 else 10) + alias.length,
+                        if (isName) 20 else 10,
+                        alias.length,
                         if (isName) plain.range else null
                     )
                     else -> null
                 }
-                if (hit != null && (best == null || hit.score > best.score)) best = hit
+                if (hit != null && (best == null || hit.score > best.score ||
+                        (hit.score == best.score && hit.len > best.len))
+                ) {
+                    best = hit
+                }
             }
             if (best != null) hits.add(best)
         }
         if (hits.isEmpty()) return Pick.None
-        val sorted = hits.sortedByDescending { it.score }
-        if (sorted.size > 1 && sorted[0].score == sorted[1].score) return Pick.Ambiguous
-        return Pick.Found(sorted[0].section, sorted[0].removal)
+        val top = hits.maxOf { it.score }
+        val leaders = hits.filter { it.score == top }
+        // Два раздела подошли одинаково (например, одно и то же слово) — не угадываем, а спрашиваем.
+        if (leaders.size > 1) return Pick.Ambiguous(leaders.map { it.section })
+        return Pick.Found(leaders[0].section, leaders[0].removal)
     }
 
     // ---------- описание ----------

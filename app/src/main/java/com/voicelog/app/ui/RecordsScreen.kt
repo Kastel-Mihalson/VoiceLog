@@ -6,6 +6,7 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -17,7 +18,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
@@ -51,10 +51,12 @@ import com.voicelog.app.MainViewModel
 import com.voicelog.app.data.Section
 import com.voicelog.app.util.Fmt
 import com.voicelog.app.util.localDate
+import com.voicelog.app.voice.SectionCommand
+import com.voicelog.app.voice.SectionRef
 import java.time.LocalDate
 
 @Composable
-fun RecordsScreen(vm: MainViewModel, onMenu: () -> Unit, onOpenSection: (Long) -> Unit) {
+fun RecordsScreen(vm: MainViewModel, onOpenSection: (Long) -> Unit) {
     val sections by vm.sections.collectAsState()
     val entries by vm.allEntries.collectAsState()
 
@@ -71,14 +73,10 @@ fun RecordsScreen(vm: MainViewModel, onMenu: () -> Unit, onOpenSection: (Long) -
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = {
             TopAppBar(
                 title = { Text("Записи") },
-                navigationIcon = {
-                    IconButton(onClick = onMenu) {
-                        Icon(Icons.Default.Menu, contentDescription = "Меню")
-                    }
-                },
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = MaterialTheme.colorScheme.background
                 )
@@ -102,7 +100,7 @@ fun RecordsScreen(vm: MainViewModel, onMenu: () -> Unit, onOpenSection: (Long) -
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    "Разделов пока нет.\nСоздайте первый: траты, отжимания, таблетки…",
+                    "Разделов пока нет.\nНажмите «Новый раздел» или скажите на главной: «Создай раздел …».",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -131,6 +129,7 @@ fun RecordsScreen(vm: MainViewModel, onMenu: () -> Unit, onOpenSection: (Long) -
     if (creating) {
         SectionDialog(
             initial = null,
+            others = sections.map { SectionRef(it.id, it.name, it.unit, it.keywords, it.askValue) },
             onDismiss = { creating = false },
             onSave = { name, unit, keywords, ask ->
                 vm.addSection(name, unit, keywords, ask)
@@ -142,6 +141,8 @@ fun RecordsScreen(vm: MainViewModel, onMenu: () -> Unit, onOpenSection: (Long) -
     editing?.let { section ->
         SectionDialog(
             initial = section,
+            others = sections.filter { it.id != section.id }
+                .map { SectionRef(it.id, it.name, it.unit, it.keywords, it.askValue) },
             onDismiss = { editing = null },
             onSave = { name, unit, keywords, ask ->
                 vm.updateSection(section.copy(name = name, unit = unit, keywords = keywords, askValue = ask))
@@ -231,6 +232,7 @@ private fun SectionCard(
 @Composable
 private fun SectionDialog(
     initial: Section?,
+    others: List<SectionRef>,
     onDismiss: () -> Unit,
     onSave: (name: String, unit: String, keywords: String, askValue: Boolean) -> Unit
 ) {
@@ -238,6 +240,18 @@ private fun SectionDialog(
     var unit by remember { mutableStateOf(initial?.unit ?: "₽") }
     var keywords by remember { mutableStateOf(initial?.keywords ?: "") }
     var ask by remember { mutableStateOf(initial?.askValue ?: true) }
+
+    // Слова и название, которые уже используются в других разделах.
+    val conflicts = remember(name, keywords, others) {
+        SectionCommand.conflicts(
+            name,
+            keywords.split(',', ';').map { it.trim() }.filter { it.isNotBlank() },
+            others
+        )
+    }
+    val sameNameExists = remember(name, others) {
+        name.isNotBlank() && others.any { SectionCommand.sameName(it.name, name) }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -267,7 +281,7 @@ private fun SectionDialog(
                     modifier = Modifier.horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    listOf("₽", "раз", "шт", "мин", "км", "мл").forEach { u ->
+                    listOf("₽", "раз", "шт", "мин", "ч", "дн.", "км", "мл").forEach { u ->
                         FilterChip(
                             selected = unit == u,
                             onClick = { unit = u },
@@ -279,9 +293,27 @@ private fun SectionDialog(
                     value = keywords,
                     onValueChange = { keywords = it },
                     label = { Text("Слова для распознавания") },
-                    supportingText = { Text("Через запятую, например: потратил, купил, расход") },
+                    supportingText = {
+                        if (conflicts.isEmpty()) {
+                            Text("Через запятую, например: потратил, купил, расход")
+                        } else {
+                            Text(
+                                "Совпадения: " + conflicts.joinToString("; ") { (w, s) ->
+                                    "«$w» уже есть в разделе «$s»"
+                                } + ". Если фраза подойдёт обоим, приложение спросит, куда записать.",
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    },
                     modifier = Modifier.fillMaxWidth()
                 )
+                if (sameNameExists) {
+                    Text(
+                        "Раздел с таким названием уже есть.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text("Уточнять число", style = MaterialTheme.typography.bodyLarge)

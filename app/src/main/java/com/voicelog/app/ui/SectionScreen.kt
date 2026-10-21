@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -77,6 +78,7 @@ fun SectionScreen(vm: MainViewModel, id: Long, onBack: () -> Unit) {
     if (sec == null) {
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
+            contentWindowInsets = WindowInsets(0, 0, 0, 0),
             topBar = { SectionTopBar("Раздел", onBack) }
         ) { inner ->
             Box(Modifier.fillMaxSize().padding(inner), contentAlignment = Alignment.Center) {
@@ -116,6 +118,7 @@ fun SectionScreen(vm: MainViewModel, id: Long, onBack: () -> Unit) {
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
         topBar = { SectionTopBar(sec.name, onBack) },
         floatingActionButton = {
             ExtendedFloatingActionButton(
