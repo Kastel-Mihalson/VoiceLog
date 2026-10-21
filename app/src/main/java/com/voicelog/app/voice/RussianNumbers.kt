@@ -1,5 +1,7 @@
 package com.voicelog.app.voice
 
+import java.math.BigDecimal
+
 /**
  * Превращает числа, записанные словами, в цифры:
  * «двести пятьдесят четыре рубля» -> «254 рубля», «две тысячи пятьсот» -> «2500».
@@ -56,12 +58,26 @@ object RussianNumbers {
                     current = 0
                     active = true
                 }
-                t.length <= 12 && t.all { it.isDigit() } &&
+                (t == "полтора" || t == "полторы") -> {
+                    if (i + 1 < tokens.size && tokens[i + 1].startsWith("тысяч")) {
+                        total += 1500L // «полторы тысячи»
+                        active = true
+                        i++
+                    } else {
+                        flush()
+                        out.add("1.5")
+                    }
+                }
+                t.matches(Regex("""\d{1,9}(\.\d{1,3})?""")) &&
                     i + 1 < tokens.size && tokens[i + 1].startsWith("тысяч") -> {
-                    // «5 тысяч» -> 5000
-                    flush()
-                    out.add((t.toLong() * 1000L).toString())
+                    // «5 тысяч» -> 5000, «2.5 тысячи» -> 2500
+                    total += BigDecimal(t).multiply(BigDecimal(1000)).toLong()
+                    active = true
                     i++
+                }
+                active && total > 0 && current == 0L && t.length <= 3 && t.all { it.isDigit() } -> {
+                    // «2 тысячи 500» -> 2500
+                    current = t.toLong()
                 }
                 else -> {
                     flush()

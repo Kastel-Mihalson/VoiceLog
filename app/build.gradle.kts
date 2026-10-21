@@ -59,5 +59,9 @@ dependencies {
     implementation("androidx.room:room-ktx:2.6.1")
     ksp("androidx.room:room-compiler:2.6.1")
 
+    // Офлайн-распознавание речи Vosk
+    implementation("com.alphacephei:vosk-android:0.3.47")
+    implementation("net.java.dev.jna:jna:5.13.0@aar")
+
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

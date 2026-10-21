@@ -14,11 +14,21 @@ import com.voicelog.app.data.AppDatabase
 import com.voicelog.app.data.LogEntry
 import com.voicelog.app.data.Section
 import com.voicelog.app.data.SettingsStore
+import com.voicelog.app.data.SpeechEngine
 import com.voicelog.app.util.Fmt
+import com.voicelog.app.voice.ModelState
 import com.voicelog.app.voice.ParseResult
 import com.voicelog.app.voice.SectionRef
 import com.voicelog.app.voice.VoiceParser
+import com.voicelog.app.voice.VoskModelManager
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import org.vosk.Model
+import org.vosk.Recognizer
+import org.vosk.android.SpeechService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -80,7 +90,18 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var ttsReady = false
     private var speechDone: (() -> Unit)? = null
 
+    // --- Vosk (офлайн-распознавание) ---
+    private val models = VoskModelManager(app)
+    val modelState: StateFlow<ModelState> = models.state
+    private var voskModel: Model? = null
+    private var voskRecognizer: Recognizer? = null
+    private var voskService: SpeechService? = null
+    private var voskDone = false
+    private val voskBuffer = StringBuilder()
+    private var voskFinishJob: Job? = null
+
     init {
+        if (models.state.value is ModelState.Ready) preloadModel()
         tts = TextToSpeech(app) { status ->
             val engine = tts
             if (status == TextToSpeech.SUCCESS && engine != null) {
@@ -140,11 +161,41 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // Голосовой ввод
     // ------------------------------------------------------------------
 
+    /** Скачать модель Vosk; после успешной загрузки включаем её как основной движок. */
+    fun downloadModel() {
+        viewModelScope.launch {
+            models.download()
+            if (models.state.value is ModelState.Ready) {
+                settings.setEngine(SpeechEngine.VOSK)
+                preloadModel()
+            }
+        }
+    }
+
+    fun deleteModel() {
+        stopVosk()
+        voskModel?.let { runCatching { it.close() } }
+        voskModel = null
+        models.delete()
+        settings.setEngine(SpeechEngine.GOOGLE)
+    }
+
+    private fun preloadModel() {
+        if (voskModel != null) return
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { Model(models.path) } }
+                .onSuccess { if (voskModel == null) voskModel = it else it.close() }
+        }
+    }
+
     /** Нажатие на кнопку микрофона. Разрешение на запись проверяет экран. */
     fun onMicClick() {
         when (_home.value.status) {
             Status.IDLE -> startListening()
-            Status.LISTENING -> recognizer?.stopListening()
+            Status.LISTENING -> {
+                recognizer?.stopListening()
+                voskService?.stop() // результат придёт в onFinalResult
+            }
             Status.SPEAKING -> {
                 speechDone = null
                 tts?.stop()
@@ -160,6 +211,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         speechDone = null
         tts?.stop()
         recognizer?.cancel()
+        voskDone = true
+        stopVosk()
         handleText(text)
     }
 
@@ -169,6 +222,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         speechDone = null
         tts?.stop()
         recognizer?.cancel()
+        voskDone = true
+        stopVosk()
         _home.value = HomeUi()
     }
 
@@ -233,6 +288,137 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun startListening() {
+        if (settings.engine.value == SpeechEngine.VOSK) startVosk() else startGoogle()
+    }
+
+    // ------------------------------------------------------------------
+    // Vosk
+    // ------------------------------------------------------------------
+
+    private fun jsonField(json: String?, key: String): String =
+        runCatching { JSONObject(json ?: "{}").optString(key) }.getOrDefault("")
+
+    private val voskListener = object : org.vosk.android.RecognitionListener {
+        override fun onPartialResult(hypothesis: String?) {
+            if (voskDone) return
+            val part = jsonField(hypothesis, "partial")
+            if (part.isNotBlank()) {
+                voskFinishJob?.cancel() // человек продолжает говорить
+                _home.update { it.copy(partial = (voskBuffer.toString() + part).trim()) }
+            }
+        }
+
+        override fun onResult(hypothesis: String?) {
+            if (voskDone) return
+            val text = jsonField(hypothesis, "text")
+            if (text.isBlank()) return
+            voskBuffer.append(text).append(' ')
+            _home.update { it.copy(partial = voskBuffer.toString().trim()) }
+            // Ждём секунду: вдруг фраза продолжится после паузы («254 рубля … 55 копеек»).
+            voskFinishJob?.cancel()
+            voskFinishJob = viewModelScope.launch {
+                delay(1000)
+                finishVosk(null)
+            }
+        }
+
+        override fun onFinalResult(hypothesis: String?) {
+            finishVosk(jsonField(hypothesis, "text"))
+        }
+
+        override fun onError(exception: Exception?) {
+            if (voskDone) return
+            voskDone = true
+            voskFinishJob?.cancel()
+            stopVosk()
+            showError("Ошибка распознавания: ${exception?.message ?: "неизвестная"}")
+        }
+
+        override fun onTimeout() {
+            finishVosk(null)
+        }
+    }
+
+    /** Завершает запись и передаёт собранный текст на разбор. */
+    private fun finishVosk(lastText: String?) {
+        if (voskDone) return
+        voskDone = true
+        voskFinishJob?.cancel()
+        if (!lastText.isNullOrBlank()) voskBuffer.append(lastText).append(' ')
+        val text = voskBuffer.toString().trim()
+        stopVosk()
+        if (text.isBlank()) onNothingHeard() else handleText(text)
+    }
+
+    private fun stopVosk() {
+        voskFinishJob?.cancel()
+        voskService?.let { runCatching { it.cancel() }; runCatching { it.shutdown() } }
+        voskService = null
+        voskRecognizer?.let { runCatching { it.close() } }
+        voskRecognizer = null
+    }
+
+    private fun startVosk() {
+        if (models.state.value !is ModelState.Ready) {
+            showError(
+                "Модель распознавания не скачана. Откройте «Настройки» → «Распознавание речи» " +
+                    "и нажмите «Скачать модель»."
+            )
+            return
+        }
+        val model = voskModel
+        if (model != null) {
+            beginVosk(model)
+            return
+        }
+        _home.update {
+            it.copy(
+                status = Status.PROCESSING,
+                partial = "",
+                message = "Загружаю модель распознавания…",
+                kind = MessageKind.INFO
+            )
+        }
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { Model(models.path) } }
+                .onSuccess {
+                    voskModel = it
+                    beginVosk(it)
+                }
+                .onFailure {
+                    showError(
+                        "Не удалось загрузить модель: ${it.message}. " +
+                            "Удалите её в настройках и скачайте заново."
+                    )
+                }
+        }
+    }
+
+    private fun beginVosk(model: Model) {
+        stopVosk()
+        voskDone = false
+        voskBuffer.setLength(0)
+        try {
+            val rec = Recognizer(model, 16000.0f)
+            voskRecognizer = rec
+            val svc = SpeechService(rec, 16000.0f)
+            voskService = svc
+            _home.update { it.copy(status = Status.LISTENING, partial = "") }
+            if (!svc.startListening(voskListener, 20000)) {
+                stopVosk()
+                showError("Не удалось запустить запись. Попробуйте ещё раз.")
+            }
+        } catch (e: Exception) {
+            stopVosk()
+            showError("Ошибка запуска распознавания: ${e.message}")
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Google (встроенный SpeechRecognizer)
+    // ------------------------------------------------------------------
+
+    private fun startGoogle() {
         val ctx = getApplication<Application>()
         if (!SpeechRecognizer.isRecognitionAvailable(ctx)) {
             showError(
@@ -421,6 +607,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        stopVosk()
+        voskModel?.let { runCatching { it.close() } }
+        voskModel = null
         recognizer?.destroy()
         recognizer = null
         tts?.stop()

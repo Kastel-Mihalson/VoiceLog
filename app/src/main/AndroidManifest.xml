@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Для однократного скачивания модели распознавания -->
+    <uses-permission android:name="android.permission.INTERNET" />
 
     <!-- Нужно, чтобы на Android 11+ видеть службы распознавания и синтеза речи -->
     <queries>
