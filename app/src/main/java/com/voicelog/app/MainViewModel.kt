@@ -17,6 +17,7 @@ import com.voicelog.app.data.SectionType
 import com.voicelog.app.data.SettingsStore
 import com.voicelog.app.data.isNotes
 import com.voicelog.app.data.SpeechEngine
+import com.voicelog.app.data.Task
 import com.voicelog.app.util.Fmt
 import com.voicelog.app.voice.ModelState
 import com.voicelog.app.voice.NoteParser
@@ -100,6 +101,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val allEntries: StateFlow<List<LogEntry>> =
         dao.allEntries().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
+    val tasks: StateFlow<List<Task>> =
+        dao.tasks().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
     /** Заметки из всех разделов-заметок (общая лента). */
     val noteEntries: StateFlow<List<LogEntry>> =
         dao.noteEntries().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -142,7 +146,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     // ------------------------------------------------------------------
-    // Разделы и записи (экраны «Записи» и «Раздел»)
+    // Разделы и записи (страницы «Заметки», «Статистика» и «Раздел»)
     // ------------------------------------------------------------------
 
     fun sectionFlow(id: Long) = dao.section(id)
@@ -182,6 +186,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 )
             )
         }
+    }
+
+    fun addTask(text: String) {
+        val t = text.trim()
+        if (t.isEmpty()) return
+        viewModelScope.launch { dao.insertTask(Task(text = t, createdAt = System.currentTimeMillis())) }
+    }
+
+    fun setTaskDone(task: Task, done: Boolean) {
+        viewModelScope.launch {
+            dao.updateTask(task.copy(done = done, doneAt = if (done) System.currentTimeMillis() else null))
+        }
+    }
+
+    fun deleteTask(task: Task) {
+        viewModelScope.launch { dao.deleteTask(task) }
     }
 
     fun addNote(sectionId: Long, text: String) {
@@ -587,7 +607,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
         if (list.isEmpty()) {
             return Reply(
-                "Пока нет ни одного раздела. Скажите «Создай раздел …» или создайте его на вкладке «Записи».",
+                "Пока нет ни одного раздела. Скажите «Создай раздел …» или создайте его на вкладке «Заметки» или «Статистика».",
                 MessageKind.ERROR
             )
         }

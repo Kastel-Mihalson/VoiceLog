@@ -51,3 +51,13 @@ data class LogEntry(
     /** Дата и время записи, миллисекунды. */
     val timestamp: Long
 )
+
+/** Задача из списка дел. doneAt — когда отмечена выполненной (null, пока не выполнена). */
+@Entity(tableName = "tasks")
+data class Task(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val text: String,
+    val done: Boolean = false,
+    val createdAt: Long,
+    val doneAt: Long? = null
+)

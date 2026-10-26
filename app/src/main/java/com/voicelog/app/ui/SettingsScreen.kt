@@ -240,7 +240,7 @@ fun SettingsScreen(vm: MainViewModel) {
                     )
                 }
                 Text(
-                    "Слова меняются в меню «Записи» → ⋮ → Изменить.",
+                    "Слова меняются на страницах «Заметки» и «Статистика»: ⋮ у раздела → Изменить.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
