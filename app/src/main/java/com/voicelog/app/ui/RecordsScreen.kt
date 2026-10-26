@@ -42,7 +42,6 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -62,7 +61,6 @@ fun RecordsScreen(vm: MainViewModel, onOpenSection: (Long) -> Unit) {
     val sections by vm.sections.collectAsState()
     val entries by vm.allEntries.collectAsState()
 
-    var feed by rememberSaveable { mutableStateOf(false) }
     var creating by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<Section?>(null) }
     var deleting by remember { mutableStateOf<Section?>(null) }
@@ -98,16 +96,7 @@ fun RecordsScreen(vm: MainViewModel, onOpenSection: (Long) -> Unit) {
         }
     ) { inner ->
         Column(Modifier.fillMaxSize().padding(inner)) {
-            Row(
-                modifier = Modifier.padding(horizontal = 16.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                FilterChip(selected = !feed, onClick = { feed = false }, label = { Text("Разделы") })
-                FilterChip(selected = feed, onClick = { feed = true }, label = { Text("Лента заметок") })
-            }
-        if (feed) {
-            NotesFeed(vm)
-        } else if (sections.isEmpty()) {
+        if (sections.isEmpty()) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()

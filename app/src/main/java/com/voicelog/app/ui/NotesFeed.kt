@@ -3,6 +3,8 @@
 package com.voicelog.app.ui
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -22,6 +24,9 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -34,6 +39,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,23 +48,61 @@ import androidx.compose.ui.unit.dp
 import com.voicelog.app.MainViewModel
 import com.voicelog.app.data.LogEntry
 import com.voicelog.app.data.Section
+import com.voicelog.app.data.isNotes
 import com.voicelog.app.util.Fmt
 import com.voicelog.app.util.localDate
 import java.time.LocalDate
 
-/** Общая лента: заметки из всех разделов-заметок, новые сверху. */
+/** Страница «Заметки»: все заметки из всех разделов-заметок, новые сверху, с фильтром по разделу. */
 @Composable
-fun NotesFeed(vm: MainViewModel, modifier: Modifier = Modifier) {
+fun NotesScreen(vm: MainViewModel) {
     val notes by vm.noteEntries.collectAsState()
     val sections by vm.sections.collectAsState()
+    val noteSections = remember(sections) { sections.filter { it.isNotes } }
     val names = remember(sections) { sections.associate { it.id to it.name } }
-    NoteList(
-        vm = vm,
-        notes = notes,
-        sectionNames = names,
-        emptyText = "Заметок пока нет.\nСкажите на вкладке «Голос»: «Заметка. …».",
-        modifier = modifier
-    )
+    var filter by rememberSaveable { mutableStateOf<Long?>(null) }
+    // Если выбранный раздел удалили — показываем все.
+    val active = filter?.takeIf { id -> noteSections.any { it.id == id } }
+    val shown = remember(notes, active) { if (active == null) notes else notes.filter { it.sectionId == active } }
+
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        topBar = {
+            TopAppBar(
+                title = { Text("Заметки") },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
+            )
+        }
+    ) { inner ->
+        Column(Modifier.fillMaxSize().padding(inner)) {
+            if (noteSections.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(selected = active == null, onClick = { filter = null }, label = { Text("Все") })
+                    noteSections.forEach { sec ->
+                        FilterChip(
+                            selected = active == sec.id,
+                            onClick = { filter = sec.id },
+                            label = { Text(sec.name) }
+                        )
+                    }
+                }
+            }
+            NoteList(
+                vm = vm,
+                notes = shown,
+                sectionNames = names,
+                emptyText = if (noteSections.isEmpty())
+                    "Разделов заметок пока нет.\nСоздайте на вкладке «Записи» или скажите: «Создай раздел Рестораны заметки»."
+                else "Заметок пока нет.\nСкажите на вкладке «Голос»: «Рагу — хороший ресторан. Заметка»."
+            )
+        }
+    }
 }
 
 /** Экран одного раздела-заметок. */
