@@ -18,8 +18,6 @@ import com.voicelog.app.data.SettingsStore
 import com.voicelog.app.data.isNotes
 import com.voicelog.app.data.SpeechEngine
 import com.voicelog.app.util.Fmt
-import com.voicelog.app.voice.AudioCapture
-import com.voicelog.app.voice.GroqClient
 import com.voicelog.app.voice.ModelState
 import com.voicelog.app.voice.NoteParser
 import com.voicelog.app.voice.ParseResult
@@ -30,7 +28,6 @@ import com.voicelog.app.voice.VoskModelManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import org.vosk.Model
@@ -61,7 +58,7 @@ data class HomeUi(
     val kind: MessageKind = MessageKind.NONE,
     /** Приложение ждёт ответа на уточняющий вопрос. */
     val awaiting: Boolean = false,
-    /** Чем распознана последняя фраза (Groq, Vosk, Google) и почему именно так. */
+    /** Чем распознана последняя фраза (Vosk или Google). */
     val source: String = ""
 )
 
@@ -85,6 +82,8 @@ internal sealed interface Pending {
     data class NeedNoteSection(val text: String, val candidates: List<SectionRef>) : Pending
     /** Раздел назван, но не сказано, какого он типа. */
     data class NeedType(val cmd: SectionCommand.Create) : Pending
+    /** Фраза записана, но неясно: заметка это или статистика. */
+    data class NeedEntryType(val text: String) : Pending
     data class NeedValue(val section: SectionRef, val description: String) : Pending
 }
 
@@ -123,14 +122,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var voskDone = false
     private val voskBuffer = StringBuilder()
     private var voskFinishJob: Job? = null
-
-    // --- Groq (облачный Whisper) ---
-    private var capture: AudioCapture? = null
-    private var captureJob: Job? = null
-
-    /** Результат проверки ключа Groq для экрана настроек. */
-    private val _groqStatus = MutableStateFlow("")
-    val groqStatus: StateFlow<String> = _groqStatus.asStateFlow()
 
     init {
         if (models.state.value is ModelState.Ready) preloadModel()
@@ -223,8 +214,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             models.download()
             if (models.state.value is ModelState.Ready) {
-                // Если выбран Groq, оставляем его: Vosk станет запасным вариантом.
-                if (settings.engine.value != SpeechEngine.GROQ) settings.setEngine(SpeechEngine.VOSK)
+                settings.setEngine(SpeechEngine.VOSK)
                 preloadModel()
             }
         }
@@ -253,7 +243,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             Status.LISTENING -> {
                 recognizer?.stopListening()
                 voskService?.stop() // результат придёт в onFinalResult
-                capture?.requestStop() // Groq: запись завершится, и речь уйдёт на распознавание
             }
             Status.SPEAKING -> {
                 speechDone = null
@@ -272,7 +261,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         recognizer?.cancel()
         voskDone = true
         stopVosk()
-        stopCapture()
         handleText(text)
     }
 
@@ -284,7 +272,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         recognizer?.cancel()
         voskDone = true
         stopVosk()
-        stopCapture()
         _home.value = HomeUi()
     }
 
@@ -350,160 +337,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private fun startListening() {
         when (settings.engine.value) {
-            SpeechEngine.GROQ -> startGroq()
             SpeechEngine.VOSK -> startVosk()
             SpeechEngine.GOOGLE -> startGoogle()
-        }
-    }
-
-    // ------------------------------------------------------------------
-    // Groq (облако) с автоматическим переходом на запасные движки
-    // ------------------------------------------------------------------
-
-    private fun stopCapture() {
-        capture?.requestStop()
-        captureJob?.cancel()
-        capture = null
-        captureJob = null
-    }
-
-    /** Офлайн-вариант, если облако невозможно использовать: Vosk, а без него — Google. */
-    private fun startOffline() {
-        if (models.state.value is ModelState.Ready) startVosk() else startGoogle()
-    }
-
-    private fun startGroq() {
-        val key = settings.groqKey.value
-        if (key.isBlank()) {
-            startOffline()
-            return
-        }
-        stopVosk()
-        recognizer?.cancel()
-        stopCapture()
-
-        val cap = AudioCapture()
-        capture = cap
-        _home.update { it.copy(status = Status.LISTENING, partial = "") }
-
-        captureJob = viewModelScope.launch {
-            val pcm = try {
-                withContext(Dispatchers.IO) { cap.record() }
-            } catch (e: Exception) {
-                ensureActive()
-                capture = null
-                showError("Ошибка записи звука: ${e.message}")
-                return@launch
-            }
-            ensureActive()
-            capture = null
-            if (pcm == null) {
-                onNothingHeard()
-                return@launch
-            }
-
-            _home.update { it.copy(status = Status.PROCESSING, partial = "") }
-            val result = transcribe(key, pcm)
-            ensureActive()
-            when {
-                result == null -> {
-                    // Ни облако, ни офлайн-модель не сработали: включаем встроенный сервис Google.
-                    _home.update {
-                        it.copy(
-                            message = "Облако и офлайн-модель недоступны. Скажите ещё раз — " +
-                                "включаю встроенное распознавание.",
-                            kind = MessageKind.INFO
-                        )
-                    }
-                    startGoogle()
-                }
-                result.text.isBlank() -> onNothingHeard()
-                else -> handleText(result.text, result.source)
-            }
-        }
-    }
-
-    private class Transcript(val text: String, val source: String)
-
-    /** Подсказка для Whisper: названия разделов, чтобы они распознавались точнее. */
-    private fun groqHint(): String {
-        val names = sections.value.joinToString(", ") { it.name.lowercase() }.take(150)
-        return if (names.isBlank()) "Суммы в рублях и копейках."
-        else "Разделы: $names. Суммы в рублях и копейках."
-    }
-
-    /** Цепочка: Groq → Vosk (на той же записи). null — не сработало ничего. */
-    private suspend fun transcribe(key: String, pcm: ByteArray): Transcript? {
-        val hint = groqHint()
-        val reason: String
-        when (val r = withContext(Dispatchers.IO) { GroqClient.transcribe(key, pcm, hint) }) {
-            is GroqClient.Result.Ok ->
-                return Transcript(if (isHallucination(r.text)) "" else r.text, "Groq")
-            is GroqClient.Result.Fail -> reason = when (r.reason) {
-                GroqClient.Reason.NETWORK -> "нет сети"
-                GroqClient.Reason.RATE_LIMIT -> "дневной лимит исчерпан"
-                GroqClient.Reason.AUTH -> "ключ не принят"
-                GroqClient.Reason.BLOCKED -> "доступ запрещён"
-                GroqClient.Reason.OTHER -> "ошибка сервера"
-            }
-        }
-        if (models.state.value is ModelState.Ready) {
-            val text = runCatching { voskTranscribe(pcm) }.getOrNull()
-            if (text != null) return Transcript(text, "Vosk · Groq недоступен: $reason")
-        }
-        return null
-    }
-
-    /** Распознаёт готовую запись моделью Vosk. */
-    private suspend fun voskTranscribe(pcm: ByteArray): String = withContext(Dispatchers.Default) {
-        val model = voskModel ?: Model(models.path).also { voskModel = it }
-        val rec = Recognizer(model, 16000.0f)
-        try {
-            val sb = StringBuilder()
-            var i = 0
-            while (i < pcm.size) {
-                val n = minOf(4000, pcm.size - i)
-                if (rec.acceptWaveForm(pcm.copyOfRange(i, i + n), n)) {
-                    sb.append(jsonField(rec.result, "text")).append(' ')
-                }
-                i += n
-            }
-            sb.append(jsonField(rec.finalResult, "text"))
-            sb.toString().trim()
-        } finally {
-            runCatching { rec.close() }
-        }
-    }
-
-    /** Whisper на тишине и шуме иногда «выдумывает» типовые фразы из субтитров. */
-    private fun isHallucination(text: String): Boolean {
-        val t = text.lowercase()
-        return t.isBlank() || listOf(
-            "субтитры", "продолжение следует", "спасибо за просмотр",
-            "редактор субтитров", "подписывайтесь на канал"
-        ).any { t.contains(it) }
-    }
-
-    /** Кнопка «Проверить» в настройках: ключ рабочий и сервис доступен. */
-    fun testGroq() {
-        val key = settings.groqKey.value
-        if (key.isBlank()) {
-            _groqStatus.value = "Сначала введите ключ."
-            return
-        }
-        _groqStatus.value = "Проверяю…"
-        viewModelScope.launch {
-            val r = withContext(Dispatchers.IO) { GroqClient.check(key) }
-            _groqStatus.value = when (r) {
-                is GroqClient.Result.Ok -> "Работает: ключ принят, сервис доступен."
-                is GroqClient.Result.Fail -> when (r.reason) {
-                    GroqClient.Reason.AUTH -> "Ключ не принят. Проверьте, что скопировали его целиком."
-                    GroqClient.Reason.NETWORK -> "Нет связи с сервисом (${r.message}). Проверьте интернет."
-                    GroqClient.Reason.BLOCKED -> "Доступ запрещён (${r.message}). Возможно, сервис недоступен в вашем регионе."
-                    GroqClient.Reason.RATE_LIMIT -> "Лимит исчерпан (${r.message})."
-                    GroqClient.Reason.OTHER -> "Ошибка (${r.message})."
-                }
-            }
         }
     }
 
@@ -801,6 +636,21 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
 
+            is Pending.NeedEntryType -> {
+                val notes = SectionCommand.parseType(text)
+                when (notes) {
+                    null -> Reply(
+                        "Не понял. Скажите «заметка» или «статистика».",
+                        MessageKind.QUESTION,
+                        listenNext = true
+                    )
+                    else -> {
+                        pending = null
+                        byKind(if (notes) NoteParser.Kind.NOTES else NoteParser.Kind.NUMBERS, p.text, refs, list)
+                    }
+                }
+            }
+
             is Pending.NeedNoteSection -> {
                 val section = VoiceParser.findSection(text, p.candidates)
                 if (section != null) {
@@ -815,19 +665,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
 
             is Pending.NeedSection -> {
-                val section = VoiceParser.findSection(text, refs)
-                if (section != null && section.isNotes) {
-                    saveNote(section, p.raw.ifBlank { p.description })
-                } else if (section != null) {
+                val numRefs = refs.filter { !it.isNotes }
+                val section = VoiceParser.findSection(text, numRefs)
+                if (section != null) {
                     handleParse(VoiceParser.complete(section, p.description, p.cents), list)
                 } else {
                     // Возможно, человек повторил команду целиком.
-                    val full = VoiceParser.parse(text, refs)
+                    val full = VoiceParser.parse(text, numRefs)
                     if (full is ParseResult.Ready || full is ParseResult.NeedValue) {
                         handleParse(full, list)
                     } else {
                         Reply(
-                            "Не понял, в какой раздел добавить. Доступны: ${sectionNames(list)}. Назовите раздел.",
+                            "Не понял, в какой раздел добавить. Доступны: " +
+                                "${numRefs.joinToString(", ") { it.name.lowercase() }}. Назовите раздел.",
                             MessageKind.QUESTION,
                             listenNext = true
                         )
@@ -846,28 +696,49 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Определяет режим по первому слову («Заметка…», «Статистика…») и разбирает фразу. */
+    /**
+     * Тип записи определяется по последнему слову фразы («… Статистика» / «… Заметка»).
+     * Запасной вариант — первое слово. Если слова нет, но раздел назван явно — берётся
+     * тип этого раздела. Иначе приложение спрашивает.
+     */
     private suspend fun route(text: String, refs: List<SectionRef>, list: List<Section>): Reply {
-        val mode = NoteParser.detectMode(text)
-        val noteRefs = refs.filter { it.isNotes }
-        val numRefs = refs.filter { !it.isNotes }
-        return when (mode.kind) {
-            NoteParser.Kind.NOTES -> handleNote(NoteParser.parse(mode.rest, noteRefs))
-            NoteParser.Kind.NUMBERS -> {
-                if (numRefs.isEmpty()) {
-                    Reply("Нет разделов для чисел. Скажите «Создай раздел …».", MessageKind.ERROR)
-                } else {
-                    numbers(mode.rest, numRefs, list)
-                }
+        val mode = NoteParser.detectTrailing(text)
+            ?: NoteParser.detectMode(text).takeIf { it.kind != NoteParser.Kind.NONE }
+        if (mode != null) return byKind(mode.kind, mode.rest, refs, list)
+
+        val named = VoiceParser.findSection(text, refs)
+        if (named != null) {
+            return if (named.isNotes) {
+                handleNote(NoteParser.parse(text, refs.filter { it.isNotes }, forced = named))
+            } else {
+                numbers(text, refs.filter { !it.isNotes }, list)
             }
-            NoteParser.Kind.NONE -> {
-                // Без префикса: если названа явно раздел-заметки — это заметка, иначе числа.
-                val named = VoiceParser.findSection(text, refs)
-                if (named != null && named.isNotes) {
-                    handleNote(NoteParser.parse(text, noteRefs, forced = named))
-                } else {
-                    numbers(text, refs.filter { !it.isNotes }.ifEmpty { refs }, list)
-                }
+        }
+        return askEntryType(text)
+    }
+
+    private fun askEntryType(text: String): Reply {
+        pending = Pending.NeedEntryType(text)
+        return Reply(
+            "Куда записать: в заметки или в статистику? Скажите «заметка» или «статистика».",
+            MessageKind.QUESTION,
+            listenNext = true
+        )
+    }
+
+    private suspend fun byKind(
+        kind: NoteParser.Kind,
+        rest: String,
+        refs: List<SectionRef>,
+        list: List<Section>
+    ): Reply = when (kind) {
+        NoteParser.Kind.NOTES -> handleNote(NoteParser.parse(rest, refs.filter { it.isNotes }))
+        else -> {
+            val numRefs = refs.filter { !it.isNotes }
+            if (numRefs.isEmpty()) {
+                Reply("Нет разделов статистики. Скажите «Создай раздел …».", MessageKind.ERROR)
+            } else {
+                numbers(rest, numRefs, list)
             }
         }
     }
@@ -1001,7 +872,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 )
             } else {
                 Reply(
-                    "В какой раздел добавить$what? Доступны: ${sectionNames(list)}.",
+                    "В какой раздел статистики добавить$what? Доступны: " +
+                        list.filter { !it.isNotes }.joinToString(", ") { it.name.lowercase() } + ".",
                     MessageKind.QUESTION,
                     listenNext = true
                 )
@@ -1036,7 +908,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
-        stopCapture()
         stopVosk()
         voskModel?.let { runCatching { it.close() } }
         voskModel = null

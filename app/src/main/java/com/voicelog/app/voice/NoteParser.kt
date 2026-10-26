@@ -58,6 +58,21 @@ object NoteParser {
         return Mode(Kind.NONE, raw)
     }
 
+    // Последнее слово фразы: «…за 120 рублей. Статистика» / «…не стоит. Заметка».
+    private val TRAILING = Regex(
+        "^(.*?)[\\s.,:;!?—–-]*(заметк\\p{L}*|записк(?:а|у|и|е|ой)|статистик\\p{L}*)[\\s.,:;!?]*$",
+        setOf(RegexOption.DOT_MATCHES_ALL, RegexOption.IGNORE_CASE)
+    )
+
+    /** Тип раздела по последнему слову фразы. null — в конце такого слова нет. */
+    fun detectTrailing(raw: String): Mode? {
+        val m = TRAILING.find(raw.trim()) ?: return null
+        val rest = m.groupValues[1].trim()
+        if (rest.isBlank()) return null
+        val word = fold(m.groupValues[2])
+        return Mode(if (word.startsWith("статистик")) Kind.NUMBERS else Kind.NOTES, rest)
+    }
+
     /**
      * Разбирает заметку. notes — разделы-заметки. forced — раздел, уже определённый
      * по смыслу фразы (когда префикса «Заметка» не было).

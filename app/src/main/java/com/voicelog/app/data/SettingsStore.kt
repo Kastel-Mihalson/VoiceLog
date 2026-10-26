@@ -9,10 +9,9 @@ enum class ThemeMode { LIGHT, DARK, SYSTEM }
 /**
  * Чем распознаём речь:
  *  VOSK   — офлайн-модель на телефоне;
- *  GOOGLE — встроенный сервис телефона;
- *  GROQ   — облачный Whisper через интернет, при сбое автоматически Vosk, затем Google.
+ *  GOOGLE — встроенный сервис телефона.
  */
-enum class SpeechEngine { VOSK, GOOGLE, GROQ }
+enum class SpeechEngine { VOSK, GOOGLE }
 
 /** Простое хранилище настроек в SharedPreferences. */
 class SettingsStore(context: Context) {
@@ -31,16 +30,6 @@ class SettingsStore(context: Context) {
 
     private val _auto = MutableStateFlow(prefs.getBoolean("auto_listen", true))
     val autoListen: StateFlow<Boolean> = _auto
-
-    // Ключ Groq хранится в закрытом хранилище приложения (другие приложения его не видят).
-    private val _groqKey = MutableStateFlow(prefs.getString("groq_key", "") ?: "")
-    val groqKey: StateFlow<String> = _groqKey
-
-    fun setGroqKey(value: String) {
-        val key = value.trim()
-        _groqKey.value = key
-        prefs.edit().putString("groq_key", key).apply()
-    }
 
     private val _engine = MutableStateFlow(
         runCatching { SpeechEngine.valueOf(prefs.getString("engine", null) ?: SpeechEngine.GOOGLE.name) }

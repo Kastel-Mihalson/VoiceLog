@@ -123,7 +123,7 @@ fun HomeScreen(vm: MainViewModel) {
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             // Верхняя часть: что услышало приложение и что ответило.
-            Box(modifier = Modifier.weight(1.1f).fillMaxWidth()) {
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 Column(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
@@ -135,49 +135,43 @@ fun HomeScreen(vm: MainViewModel) {
                 }
             }
 
-            Spacer(Modifier.height(16.dp))
+            Spacer(Modifier.height(12.dp))
 
-            // Кнопка записи — чуть ниже центра экрана.
             MicButton(listening = ui.status == Status.LISTENING, onClick = onMic)
 
-            Column(
-                modifier = Modifier
-                    .weight(0.9f)
-                    .fillMaxWidth()
-                    .padding(top = 8.dp),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Text(
-                    text = when (ui.status) {
-                        Status.IDLE -> "Нажмите на кнопку и скажите команду"
-                        Status.LISTENING -> if (ui.partial.isBlank()) "Слушаю…" else ui.partial
-                        Status.PROCESSING -> "Обрабатываю…"
-                        Status.SPEAKING -> "Говорю… (нажмите, чтобы ответить сразу)"
-                    },
-                    style = MaterialTheme.typography.bodyLarge,
-                    textAlign = TextAlign.Center,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                if (ui.awaiting) {
-                    TextButton(onClick = vm::cancelDialog) { Text("Отменить диалог") }
-                }
-                Spacer(Modifier.weight(1f))
-                OutlinedTextField(
-                    value = typed,
-                    onValueChange = { typed = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    placeholder = { Text("Или введите команду текстом") },
-                    trailingIcon = {
-                        IconButton(onClick = sendTyped) {
-                            Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Отправить")
-                        }
-                    },
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(onSend = { sendTyped() })
-                )
-                Spacer(Modifier.height(12.dp))
+            Text(
+                text = when (ui.status) {
+                    Status.IDLE -> "Нажмите на кнопку и скажите команду"
+                    Status.LISTENING -> if (ui.partial.isBlank()) "Слушаю…" else ui.partial
+                    Status.PROCESSING -> "Обрабатываю…"
+                    Status.SPEAKING -> "Говорю… (нажмите, чтобы ответить сразу)"
+                },
+                style = MaterialTheme.typography.bodyLarge,
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 8.dp)
+            )
+            if (ui.awaiting) {
+                TextButton(onClick = vm::cancelDialog) { Text("Отменить диалог") }
             }
+
+            // Поле ввода всегда внизу и поднимается над клавиатурой.
+            OutlinedTextField(
+                value = typed,
+                onValueChange = { typed = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = 12.dp, bottom = 12.dp),
+                maxLines = 4,
+                placeholder = { Text("Или введите команду текстом") },
+                trailingIcon = {
+                    IconButton(onClick = sendTyped) {
+                        Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Отправить")
+                    }
+                },
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(onSend = { sendTyped() })
+            )
         }
     }
 }
@@ -227,22 +221,17 @@ private fun HintCard() {
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Скажите, например:", style = MaterialTheme.typography.titleSmall)
+            Text("Скажите фразу, а в конце — тип записи:", style = MaterialTheme.typography.titleSmall)
             Text(
-                "• «Добавь в раздел траты покупка чая стоимостью 254 рубля 55 копеек»",
+                "• «Купил творог за 120 рублей. Статистика»",
                 style = MaterialTheme.typography.bodyMedium
             )
             Text(
-                "• «Заметка. Рагу — хороший ресторан, около Мадагаскара»",
+                "• «Рагу — хороший ресторан около Мадагаскара. Заметка»",
                 style = MaterialTheme.typography.bodyMedium
             )
             Text(
-                "Первое слово «Заметка» или «Статистика» задаёт режим.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text(
-                "Если чего-то не хватит, приложение уточнит. Чтобы прервать — скажите «отмена».",
+                "Если тип или раздел не понятен, приложение уточнит. Чтобы прервать — скажите «отмена».",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

@@ -7,9 +7,13 @@ import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
@@ -55,23 +59,27 @@ fun VoiceLogApp(vm: MainViewModel = viewModel()) {
 
 /** Вкладки нижнего меню: «Голос» — в центре и открывается первой. */
 private enum class Tab(val title: String, val icon: ImageVector) {
-    RECORDS("Записи", Icons.AutoMirrored.Filled.List),
+    NOTES("Заметки", Icons.Default.Edit),
+    STATS("Статистика", Icons.Default.BarChart),
     VOICE("Голос", Icons.Default.Mic),
+    RECORDS("Записи", Icons.AutoMirrored.Filled.List),
     SETTINGS("Настройки", Icons.Default.Settings)
 }
 
-private const val VOICE_PAGE = 1
+private val VOICE_PAGE = Tab.VOICE.ordinal
 
 @Composable
 private fun AppNav(vm: MainViewModel) {
-    // Внутри «Записей»: null — список разделов, иначе id открытого раздела.
-    var sectionId by rememberSaveable { mutableStateOf<Long?>(null) }
+    // Открытый раздел внутри страниц «Статистика» и «Записи» (null — список).
+    var statsId by rememberSaveable { mutableStateOf<Long?>(null) }
+    var recordsId by rememberSaveable { mutableStateOf<Long?>(null) }
     val pager = rememberPagerState(initialPage = VOICE_PAGE) { Tab.entries.size }
     val scope = rememberCoroutineScope()
 
-    BackHandler(enabled = pager.currentPage != VOICE_PAGE || sectionId != null) {
+    BackHandler(enabled = pager.currentPage != VOICE_PAGE || statsId != null || recordsId != null) {
         when {
-            pager.currentPage == 0 && sectionId != null -> sectionId = null
+            pager.currentPage == Tab.STATS.ordinal && statsId != null -> statsId = null
+            pager.currentPage == Tab.RECORDS.ordinal && recordsId != null -> recordsId = null
             else -> scope.launch { pager.animateScrollToPage(VOICE_PAGE) }
         }
     }
@@ -84,11 +92,9 @@ private fun AppNav(vm: MainViewModel) {
                 for ((index, tab) in Tab.entries.withIndex()) {
                     NavigationBarItem(
                         selected = pager.currentPage == index,
-                        onClick = {
-                            scope.launch { pager.animateScrollToPage(index) }
-                        },
+                        onClick = { scope.launch { pager.animateScrollToPage(index) } },
                         icon = { Icon(tab.icon, contentDescription = tab.title) },
-                        label = { Text(tab.title) },
+                        label = { Text(tab.title, maxLines = 1, style = MaterialTheme.typography.labelSmall) },
                         colors = NavigationBarItemDefaults.colors(
                             indicatorColor = MaterialTheme.colorScheme.primaryContainer,
                             selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -99,26 +105,44 @@ private fun AppNav(vm: MainViewModel) {
             }
         }
     ) { inner ->
-        // Верхний отступ (строка состояния) обрабатывает панель каждого экрана,
-        // а снизу экран заканчивается над нижним меню.
-        Box(Modifier.fillMaxSize().padding(bottom = inner.calculateBottomPadding())) {
+        // Нижний отступ — высота меню. Его же «съедаем» у клавиатуры,
+        // иначе поле ввода поднимется выше, чем нужно.
+        val bottom = inner.calculateBottomPadding()
+        Box(
+            Modifier
+                .fillMaxSize()
+                .padding(bottom = bottom)
+                .consumeWindowInsets(PaddingValues(bottom = bottom))
+        ) {
             HorizontalPager(
                 state = pager,
                 modifier = Modifier.fillMaxSize(),
                 beyondViewportPageCount = Tab.entries.size
             ) { page ->
-                when (page) {
-                    0 -> {
-                        val id = sectionId
+                when (Tab.entries[page]) {
+                    Tab.NOTES -> NotesScreen(vm = vm)
+
+                    Tab.STATS -> {
+                        val id = statsId
                         if (id == null) {
-                            RecordsScreen(vm = vm, onOpenSection = { sectionId = it })
+                            StatsScreen(vm = vm, onOpenSection = { statsId = it })
                         } else {
-                            SectionScreen(vm = vm, id = id, onBack = { sectionId = null })
+                            SectionScreen(vm = vm, id = id, onBack = { statsId = null })
                         }
                     }
 
-                    1 -> HomeScreen(vm = vm)
-                    else -> SettingsScreen(vm = vm)
+                    Tab.VOICE -> HomeScreen(vm = vm)
+
+                    Tab.RECORDS -> {
+                        val id = recordsId
+                        if (id == null) {
+                            RecordsScreen(vm = vm, onOpenSection = { recordsId = it })
+                        } else {
+                            SectionScreen(vm = vm, id = id, onBack = { recordsId = null })
+                        }
+                    }
+
+                    Tab.SETTINGS -> SettingsScreen(vm = vm)
                 }
             }
         }
