@@ -13,12 +13,15 @@ import androidx.lifecycle.viewModelScope
 import com.voicelog.app.data.AppDatabase
 import com.voicelog.app.data.LogEntry
 import com.voicelog.app.data.Section
+import com.voicelog.app.data.SectionType
 import com.voicelog.app.data.SettingsStore
+import com.voicelog.app.data.isNotes
 import com.voicelog.app.data.SpeechEngine
 import com.voicelog.app.util.Fmt
 import com.voicelog.app.voice.AudioCapture
 import com.voicelog.app.voice.GroqClient
 import com.voicelog.app.voice.ModelState
+import com.voicelog.app.voice.NoteParser
 import com.voicelog.app.voice.ParseResult
 import com.voicelog.app.voice.SectionCommand
 import com.voicelog.app.voice.SectionRef
@@ -76,11 +79,16 @@ internal sealed interface Pending {
     /** Раздел создан, ждём единицу измерения. */
     data class NeedUnit(val sectionId: Long, val name: String) : Pending
 
-    data class NeedSection(val description: String, val cents: Long?) : Pending
+    /** raw — исходная фраза: если выберут раздел-заметки, сохраняем её дословно. */
+    data class NeedSection(val description: String, val cents: Long?, val raw: String = "") : Pending
+    /** Заметка есть, но непонятно, в какой раздел-заметки её положить. */
+    data class NeedNoteSection(val text: String, val candidates: List<SectionRef>) : Pending
+    /** Раздел назван, но не сказано, какого он типа. */
+    data class NeedType(val cmd: SectionCommand.Create) : Pending
     data class NeedValue(val section: SectionRef, val description: String) : Pending
 }
 
-private fun Section.toRef() = SectionRef(id, name, unit, keywords, askValue)
+private fun Section.toRef() = SectionRef(id, name, unit, keywords, askValue, isNotes)
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -93,11 +101,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val allEntries: StateFlow<List<LogEntry>> =
         dao.allEntries().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
+    /** Заметки из всех разделов-заметок (общая лента). */
+    val noteEntries: StateFlow<List<LogEntry>> =
+        dao.noteEntries().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
     private val _home = MutableStateFlow(HomeUi())
     val home: StateFlow<HomeUi> = _home.asStateFlow()
-
-    /** Автозапуск записи при открытии приложения выполняется один раз за запуск. */
-    var autoStartHandled = false
 
     private var pending: Pending? = null
     private var recognizer: SpeechRecognizer? = null
@@ -149,9 +158,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun entriesFlow(id: Long) = dao.entries(id)
 
-    fun addSection(name: String, unit: String, keywords: String, askValue: Boolean) {
+    fun addSection(name: String, unit: String, keywords: String, askValue: Boolean, notes: Boolean = false) {
         viewModelScope.launch {
-            dao.insertSection(Section(name = name, unit = unit, keywords = keywords, askValue = askValue))
+            dao.insertSection(
+                Section(
+                    name = name,
+                    unit = if (notes) "" else unit,
+                    keywords = keywords,
+                    askValue = if (notes) false else askValue,
+                    type = (if (notes) SectionType.NOTES else SectionType.NUMBERS).name
+                )
+            )
         }
     }
 
@@ -174,6 +191,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 )
             )
         }
+    }
+
+    fun addNote(sectionId: Long, text: String) {
+        viewModelScope.launch {
+            dao.insertEntry(
+                LogEntry(
+                    sectionId = sectionId,
+                    description = text,
+                    valueCents = 0,
+                    timestamp = System.currentTimeMillis()
+                )
+            )
+        }
+    }
+
+    fun updateEntry(entry: LogEntry) {
+        viewModelScope.launch { dao.updateEntry(entry) }
     }
 
     fun deleteEntry(entry: LogEntry) {
@@ -752,11 +786,39 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
 
-            null -> handleParse(VoiceParser.parse(text, refs), list)
+            null -> route(text, refs, list)
+
+            is Pending.NeedType -> {
+                val notes = SectionCommand.parseType(text)
+                if (notes == null) {
+                    Reply(
+                        "Не понял. Раздел для чисел (суммы, количество) или для заметок (текст)?",
+                        MessageKind.QUESTION,
+                        listenNext = true
+                    )
+                } else {
+                    handleCreate(p.cmd.copy(notes = notes), list, refs)
+                }
+            }
+
+            is Pending.NeedNoteSection -> {
+                val section = VoiceParser.findSection(text, p.candidates)
+                if (section != null) {
+                    saveNote(section, p.text)
+                } else {
+                    Reply(
+                        "Не понял, в какой раздел. Доступны: ${p.candidates.joinToString(", ") { it.name.lowercase() }}.",
+                        MessageKind.QUESTION,
+                        listenNext = true
+                    )
+                }
+            }
 
             is Pending.NeedSection -> {
                 val section = VoiceParser.findSection(text, refs)
-                if (section != null) {
+                if (section != null && section.isNotes) {
+                    saveNote(section, p.raw.ifBlank { p.description })
+                } else if (section != null) {
                     handleParse(VoiceParser.complete(section, p.description, p.cents), list)
                 } else {
                     // Возможно, человек повторил команду целиком.
@@ -784,6 +846,77 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** Определяет режим по первому слову («Заметка…», «Статистика…») и разбирает фразу. */
+    private suspend fun route(text: String, refs: List<SectionRef>, list: List<Section>): Reply {
+        val mode = NoteParser.detectMode(text)
+        val noteRefs = refs.filter { it.isNotes }
+        val numRefs = refs.filter { !it.isNotes }
+        return when (mode.kind) {
+            NoteParser.Kind.NOTES -> handleNote(NoteParser.parse(mode.rest, noteRefs))
+            NoteParser.Kind.NUMBERS -> {
+                if (numRefs.isEmpty()) {
+                    Reply("Нет разделов для чисел. Скажите «Создай раздел …».", MessageKind.ERROR)
+                } else {
+                    numbers(mode.rest, numRefs, list)
+                }
+            }
+            NoteParser.Kind.NONE -> {
+                // Без префикса: если названа явно раздел-заметки — это заметка, иначе числа.
+                val named = VoiceParser.findSection(text, refs)
+                if (named != null && named.isNotes) {
+                    handleNote(NoteParser.parse(text, noteRefs, forced = named))
+                } else {
+                    numbers(text, refs.filter { !it.isNotes }.ifEmpty { refs }, list)
+                }
+            }
+        }
+    }
+
+    private suspend fun numbers(text: String, numRefs: List<SectionRef>, list: List<Section>): Reply {
+        var result = VoiceParser.parse(text, numRefs)
+        // Единственный раздел с числами — раздел можно не называть.
+        if (result is ParseResult.NeedSection && result.candidates.isEmpty() && numRefs.size == 1) {
+            result = VoiceParser.complete(numRefs[0], result.description, result.valueCents)
+        }
+        return handleParse(result, list, raw = text)
+    }
+
+    private suspend fun handleNote(r: NoteParser.Result): Reply = when (r) {
+        is NoteParser.Result.Ready -> saveNote(r.section, r.text)
+        NoteParser.Result.Empty -> Reply("Не расслышал текст заметки. Повторите.", MessageKind.INFO)
+        NoteParser.Result.NoSections -> Reply(
+            "Нет разделов для заметок. Скажите «Создай раздел Рестораны заметки».",
+            MessageKind.ERROR
+        )
+        is NoteParser.Result.NeedSection -> {
+            pending = Pending.NeedNoteSection(r.text, r.candidates)
+            val names = r.candidates.joinToString(if (r.ambiguous) " или " else ", ") { "«${it.name}»" }
+            Reply(
+                if (r.ambiguous) "Заметка подходит к нескольким разделам: $names. В какой записать?"
+                else "В какой раздел записать заметку? Доступны: $names.",
+                MessageKind.QUESTION,
+                listenNext = true
+            )
+        }
+    }
+
+    private suspend fun saveNote(section: SectionRef, text: String): Reply {
+        pending = null
+        dao.insertEntry(
+            LogEntry(
+                sectionId = section.id,
+                description = text,
+                valueCents = 0,
+                timestamp = System.currentTimeMillis()
+            )
+        )
+        return Reply(
+            "Записал в «${section.name}»: $text",
+            MessageKind.SAVED,
+            spoken = "Записал заметку в ${section.name}"
+        )
+    }
+
     /** Создание раздела по голосовой команде. */
     private suspend fun handleCreate(cmd: SectionCommand.Create, list: List<Section>, refs: List<SectionRef>): Reply {
         pending = null
@@ -794,13 +927,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         list.firstOrNull { SectionCommand.sameName(it.name, cmd.name) }?.let {
             return Reply("Раздел «${it.name}» уже есть.", MessageKind.INFO)
         }
+        if (cmd.notes == null) {
+            pending = Pending.NeedType(cmd)
+            return Reply(
+                "Раздел «${cmd.name}» — для чисел (суммы, количество) или для заметок (текст)?",
+                MessageKind.QUESTION,
+                listenNext = true
+            )
+        }
+        val notes = cmd.notes
 
         val id = dao.insertSection(
             Section(
                 name = cmd.name,
-                unit = cmd.unit ?: "",
+                unit = if (notes) "" else cmd.unit ?: "",
                 keywords = cmd.keywords.joinToString(","),
-                askValue = true
+                askValue = !notes,
+                type = (if (notes) SectionType.NOTES else SectionType.NUMBERS).name
             )
         )
 
@@ -812,6 +955,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             } + ". Если фраза подойдёт обоим, приложение спросит, куда записать."
 
         val wordsInfo = if (cmd.keywords.isEmpty()) "" else " Слова: ${cmd.keywords.joinToString(", ")}."
+        if (notes) {
+            return Reply(
+                "Создан раздел заметок «${cmd.name}».$wordsInfo$warning\n" +
+                    "Скажите: «Заметка. …» и название раздела в тексте.",
+                MessageKind.SAVED,
+                spoken = "Создал раздел заметок ${cmd.name}"
+            )
+        }
         return if (cmd.unit != null) {
             val shown = if (cmd.unit.isBlank()) "без единицы" else cmd.unit
             Reply(
@@ -831,12 +982,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private suspend fun handleParse(result: ParseResult, list: List<Section>): Reply = when (result) {
+    private suspend fun handleParse(result: ParseResult, list: List<Section>, raw: String = ""): Reply = when (result) {
         is ParseResult.Empty ->
             Reply("Не расслышал команду. Попробуйте ещё раз.", MessageKind.INFO)
 
         is ParseResult.NeedSection -> {
-            pending = Pending.NeedSection(result.description, result.valueCents)
+            pending = Pending.NeedSection(result.description, result.valueCents, raw)
             val what = if (result.description.isBlank()) "" else " «${result.description}»"
             if (result.candidates.isNotEmpty()) {
                 // Одинаковые слова распознавания у нескольких разделов — не угадываем.

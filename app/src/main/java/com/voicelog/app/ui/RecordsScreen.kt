@@ -42,6 +42,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,6 +50,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.voicelog.app.MainViewModel
 import com.voicelog.app.data.Section
+import com.voicelog.app.data.isNotes
 import com.voicelog.app.util.Fmt
 import com.voicelog.app.util.localDate
 import com.voicelog.app.voice.SectionCommand
@@ -60,10 +62,15 @@ fun RecordsScreen(vm: MainViewModel, onOpenSection: (Long) -> Unit) {
     val sections by vm.sections.collectAsState()
     val entries by vm.allEntries.collectAsState()
 
+    var feed by rememberSaveable { mutableStateOf(false) }
     var creating by remember { mutableStateOf(false) }
     var editing by remember { mutableStateOf<Section?>(null) }
     var deleting by remember { mutableStateOf<Section?>(null) }
 
+    val noteStats = remember(entries, sections) {
+        val noteIds = sections.filter { it.isNotes }.map { it.id }.toSet()
+        entries.filter { it.sectionId in noteIds }.groupBy { it.sectionId }
+    }
     val todayTotals = remember(entries) {
         val today = LocalDate.now()
         entries.filter { it.localDate() == today }
@@ -90,26 +97,33 @@ fun RecordsScreen(vm: MainViewModel, onOpenSection: (Long) -> Unit) {
             )
         }
     ) { inner ->
-        if (sections.isEmpty()) {
+        Column(Modifier.fillMaxSize().padding(inner)) {
+            Row(
+                modifier = Modifier.padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                FilterChip(selected = !feed, onClick = { feed = false }, label = { Text("Разделы") })
+                FilterChip(selected = feed, onClick = { feed = true }, label = { Text("Лента заметок") })
+            }
+        if (feed) {
+            NotesFeed(vm)
+        } else if (sections.isEmpty()) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(inner)
                     .padding(32.dp),
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    "Разделов пока нет.\nНажмите «Новый раздел» или скажите на главной: «Создай раздел …».",
+                    "Разделов пока нет.\nНажмите «Новый раздел» или скажите на вкладке «Голос»: «Создай раздел …».",
                     style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         } else {
             LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(inner),
+                modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 96.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
@@ -117,6 +131,8 @@ fun RecordsScreen(vm: MainViewModel, onOpenSection: (Long) -> Unit) {
                     SectionCard(
                         section = section,
                         todayCents = todayTotals[section.id] ?: 0L,
+                        noteCount = noteStats[section.id]?.size ?: 0,
+                        lastNote = noteStats[section.id]?.firstOrNull()?.description,
                         onClick = { onOpenSection(section.id) },
                         onEdit = { editing = section },
                         onDelete = { deleting = section }
@@ -124,15 +140,16 @@ fun RecordsScreen(vm: MainViewModel, onOpenSection: (Long) -> Unit) {
                 }
             }
         }
+        }
     }
 
     if (creating) {
         SectionDialog(
             initial = null,
-            others = sections.map { SectionRef(it.id, it.name, it.unit, it.keywords, it.askValue) },
+            others = sections.map { SectionRef(it.id, it.name, it.unit, it.keywords, it.askValue, it.isNotes) },
             onDismiss = { creating = false },
-            onSave = { name, unit, keywords, ask ->
-                vm.addSection(name, unit, keywords, ask)
+            onSave = { name, unit, keywords, ask, notes ->
+                vm.addSection(name, unit, keywords, ask, notes)
                 creating = false
             }
         )
@@ -142,9 +159,9 @@ fun RecordsScreen(vm: MainViewModel, onOpenSection: (Long) -> Unit) {
         SectionDialog(
             initial = section,
             others = sections.filter { it.id != section.id }
-                .map { SectionRef(it.id, it.name, it.unit, it.keywords, it.askValue) },
+                .map { SectionRef(it.id, it.name, it.unit, it.keywords, it.askValue, it.isNotes) },
             onDismiss = { editing = null },
-            onSave = { name, unit, keywords, ask ->
+            onSave = { name, unit, keywords, ask, _ ->
                 vm.updateSection(section.copy(name = name, unit = unit, keywords = keywords, askValue = ask))
                 editing = null
             }
@@ -172,6 +189,8 @@ fun RecordsScreen(vm: MainViewModel, onOpenSection: (Long) -> Unit) {
 private fun SectionCard(
     section: Section,
     todayCents: Long,
+    noteCount: Int,
+    lastNote: String?,
     onClick: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit
@@ -190,12 +209,30 @@ private fun SectionCard(
         ) {
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(section.name, style = MaterialTheme.typography.titleLarge)
-                Text(
-                    "Сегодня: ${Fmt.value(todayCents, section.unit)}",
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                if (section.isNotes) {
+                    Text(
+                        "Заметок: $noteCount",
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    if (lastNote != null) {
+                        Text(
+                            lastNote,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 1,
+                            overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                } else {
+                    Text(
+                        "Сегодня: ${Fmt.value(todayCents, section.unit)}",
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
                 if (section.keywords.isNotBlank()) {
                     Text(
                         "Слова: ${section.keywords.replace(",", ", ")}",
@@ -234,12 +271,13 @@ private fun SectionDialog(
     initial: Section?,
     others: List<SectionRef>,
     onDismiss: () -> Unit,
-    onSave: (name: String, unit: String, keywords: String, askValue: Boolean) -> Unit
+    onSave: (name: String, unit: String, keywords: String, askValue: Boolean, notes: Boolean) -> Unit
 ) {
     var name by remember { mutableStateOf(initial?.name ?: "") }
     var unit by remember { mutableStateOf(initial?.unit ?: "₽") }
     var keywords by remember { mutableStateOf(initial?.keywords ?: "") }
     var ask by remember { mutableStateOf(initial?.askValue ?: true) }
+    var notes by remember { mutableStateOf(initial?.isNotes ?: false) }
 
     // Слова и название, которые уже используются в других разделах.
     val conflicts = remember(name, keywords, others) {
@@ -270,14 +308,20 @@ private fun SectionDialog(
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
-                OutlinedTextField(
+                if (initial == null) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        FilterChip(selected = !notes, onClick = { notes = false }, label = { Text("Числа") })
+                        FilterChip(selected = notes, onClick = { notes = true }, label = { Text("Заметки") })
+                    }
+                }
+                if (!notes) OutlinedTextField(
                     value = unit,
                     onValueChange = { unit = it },
                     label = { Text("Единица измерения") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
-                Row(
+                if (!notes) Row(
                     modifier = Modifier.horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
@@ -314,7 +358,7 @@ private fun SectionDialog(
                         color = MaterialTheme.colorScheme.error
                     )
                 }
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                if (!notes) Row(verticalAlignment = Alignment.CenterVertically) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text("Уточнять число", style = MaterialTheme.typography.bodyLarge)
                         Text(
@@ -330,7 +374,7 @@ private fun SectionDialog(
         confirmButton = {
             TextButton(
                 enabled = name.isNotBlank(),
-                onClick = { onSave(name.trim(), unit.trim(), keywords.trim(), ask) }
+                onClick = { onSave(name.trim(), unit.trim(), keywords.trim(), ask, notes) }
             ) { Text("Сохранить") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }

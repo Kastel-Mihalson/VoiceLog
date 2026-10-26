@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -76,7 +75,6 @@ private val ListeningColor = Color(0xFFE5484D)
 @Composable
 fun HomeScreen(vm: MainViewModel) {
     val ui by vm.home.collectAsState()
-    val autoStart by vm.settings.autoStartRecording.collectAsState()
     val ctx = LocalContext.current
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -94,14 +92,6 @@ fun HomeScreen(vm: MainViewModel) {
             ctx, Manifest.permission.RECORD_AUDIO
         ) == PackageManager.PERMISSION_GRANTED
         if (granted) vm.onMicClick() else permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
-    }
-
-    // При открытии приложения сразу включаем запись голоса (один раз за запуск).
-    LaunchedEffect(Unit) {
-        if (!vm.autoStartHandled) {
-            vm.autoStartHandled = true
-            if (autoStart && vm.home.value.status == Status.IDLE) onMic()
-        }
     }
 
     var typed by remember { mutableStateOf("") }
@@ -241,6 +231,15 @@ private fun HintCard() {
             Text(
                 "• «Добавь в раздел траты покупка чая стоимостью 254 рубля 55 копеек»",
                 style = MaterialTheme.typography.bodyMedium
+            )
+            Text(
+                "• «Заметка. Рагу — хороший ресторан, около Мадагаскара»",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Text(
+                "Первое слово «Заметка» или «Статистика» задаёт режим.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             Text(
                 "Если чего-то не хватит, приложение уточнит. Чтобы прервать — скажите «отмена».",

@@ -3,12 +3,14 @@ package com.voicelog.app.ui
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
-import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -19,6 +21,8 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -49,26 +53,27 @@ fun VoiceLogApp(vm: MainViewModel = viewModel()) {
     }
 }
 
-/** Вкладки нижнего меню. */
-private enum class Tab(val route: String, val title: String, val icon: ImageVector) {
-    HOME("home", "Главная", Icons.Default.Home),
-    RECORDS("records", "Записи", Icons.AutoMirrored.Filled.List),
-    SETTINGS("settings", "Настройки", Icons.Default.Settings)
+/** Вкладки нижнего меню: «Голос» — в центре и открывается первой. */
+private enum class Tab(val title: String, val icon: ImageVector) {
+    RECORDS("Записи", Icons.AutoMirrored.Filled.List),
+    VOICE("Голос", Icons.Default.Mic),
+    SETTINGS("Настройки", Icons.Default.Settings)
 }
+
+private const val VOICE_PAGE = 1
 
 @Composable
 private fun AppNav(vm: MainViewModel) {
-    // Маршруты: "home", "records", "section/<id>", "settings"
-    var route by rememberSaveable { mutableStateOf("home") }
-    val inDetail = route.startsWith("section/")
+    // Внутри «Записей»: null — список разделов, иначе id открытого раздела.
+    var sectionId by rememberSaveable { mutableStateOf<Long?>(null) }
+    val pager = rememberPagerState(initialPage = VOICE_PAGE) { Tab.entries.size }
+    val scope = rememberCoroutineScope()
 
-    BackHandler(enabled = route != "home") {
-        route = if (inDetail) "records" else "home"
-    }
-
-    fun selected(tab: Tab) = when (tab) {
-        Tab.RECORDS -> route == "records" || inDetail
-        else -> route == tab.route
+    BackHandler(enabled = pager.currentPage != VOICE_PAGE || sectionId != null) {
+        when {
+            pager.currentPage == 0 && sectionId != null -> sectionId = null
+            else -> scope.launch { pager.animateScrollToPage(VOICE_PAGE) }
+        }
     }
 
     Scaffold(
@@ -76,10 +81,12 @@ private fun AppNav(vm: MainViewModel) {
         contentWindowInsets = WindowInsets(0, 0, 0, 0),
         bottomBar = {
             NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
-                for (tab in Tab.entries) {
+                for ((index, tab) in Tab.entries.withIndex()) {
                     NavigationBarItem(
-                        selected = selected(tab),
-                        onClick = { route = tab.route },
+                        selected = pager.currentPage == index,
+                        onClick = {
+                            scope.launch { pager.animateScrollToPage(index) }
+                        },
                         icon = { Icon(tab.icon, contentDescription = tab.title) },
                         label = { Text(tab.title) },
                         colors = NavigationBarItemDefaults.colors(
@@ -95,23 +102,24 @@ private fun AppNav(vm: MainViewModel) {
         // Верхний отступ (строка состояния) обрабатывает панель каждого экрана,
         // а снизу экран заканчивается над нижним меню.
         Box(Modifier.fillMaxSize().padding(bottom = inner.calculateBottomPadding())) {
-            when {
-                route == "records" -> RecordsScreen(
-                    vm = vm,
-                    onOpenSection = { route = "section/$it" }
-                )
-
-                inDetail -> {
-                    val id = route.removePrefix("section/").toLongOrNull()
-                    if (id == null) {
-                        route = "records"
-                    } else {
-                        SectionScreen(vm = vm, id = id, onBack = { route = "records" })
+            HorizontalPager(
+                state = pager,
+                modifier = Modifier.fillMaxSize(),
+                beyondViewportPageCount = Tab.entries.size
+            ) { page ->
+                when (page) {
+                    0 -> {
+                        val id = sectionId
+                        if (id == null) {
+                            RecordsScreen(vm = vm, onOpenSection = { sectionId = it })
+                        } else {
+                            SectionScreen(vm = vm, id = id, onBack = { sectionId = null })
+                        }
                     }
-                }
 
-                route == "settings" -> SettingsScreen(vm = vm)
-                else -> HomeScreen(vm = vm)
+                    1 -> HomeScreen(vm = vm)
+                    else -> SettingsScreen(vm = vm)
+                }
             }
         }
     }
