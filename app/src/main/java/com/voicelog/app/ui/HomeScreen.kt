@@ -196,7 +196,7 @@ fun HomeScreen(vm: MainViewModel) {
 private fun InfoArea(ui: HomeUi) {
     if (ui.heard.isNotBlank()) {
         Text(
-            text = "Вы сказали: «${ui.heard}»",
+            text = "Вы сказали: «${ui.heard}»" + if (ui.source.isBlank()) "" else "\n(${ui.source})",
             style = MaterialTheme.typography.bodyMedium,
             fontStyle = FontStyle.Italic,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
