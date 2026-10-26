@@ -16,6 +16,8 @@ import com.voicelog.app.data.Section
 import com.voicelog.app.data.SettingsStore
 import com.voicelog.app.data.SpeechEngine
 import com.voicelog.app.util.Fmt
+import com.voicelog.app.voice.AudioCapture
+import com.voicelog.app.voice.GroqClient
 import com.voicelog.app.voice.ModelState
 import com.voicelog.app.voice.ParseResult
 import com.voicelog.app.voice.SectionCommand
@@ -25,6 +27,7 @@ import com.voicelog.app.voice.VoskModelManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import org.vosk.Model
@@ -54,7 +57,9 @@ data class HomeUi(
     val message: String = "",
     val kind: MessageKind = MessageKind.NONE,
     /** Приложение ждёт ответа на уточняющий вопрос. */
-    val awaiting: Boolean = false
+    val awaiting: Boolean = false,
+    /** Чем распознана последняя фраза (Groq, Vosk, Google) и почему именно так. */
+    val source: String = ""
 )
 
 internal data class Reply(
@@ -109,6 +114,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var voskDone = false
     private val voskBuffer = StringBuilder()
     private var voskFinishJob: Job? = null
+
+    // --- Groq (облачный Whisper) ---
+    private var capture: AudioCapture? = null
+    private var captureJob: Job? = null
+
+    /** Результат проверки ключа Groq для экрана настроек. */
+    private val _groqStatus = MutableStateFlow("")
+    val groqStatus: StateFlow<String> = _groqStatus.asStateFlow()
 
     init {
         if (models.state.value is ModelState.Ready) preloadModel()
@@ -176,7 +189,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             models.download()
             if (models.state.value is ModelState.Ready) {
-                settings.setEngine(SpeechEngine.VOSK)
+                // Если выбран Groq, оставляем его: Vosk станет запасным вариантом.
+                if (settings.engine.value != SpeechEngine.GROQ) settings.setEngine(SpeechEngine.VOSK)
                 preloadModel()
             }
         }
@@ -187,7 +201,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         voskModel?.let { runCatching { it.close() } }
         voskModel = null
         models.delete()
-        settings.setEngine(SpeechEngine.GOOGLE)
+        if (settings.engine.value == SpeechEngine.VOSK) settings.setEngine(SpeechEngine.GOOGLE)
     }
 
     private fun preloadModel() {
@@ -205,6 +219,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             Status.LISTENING -> {
                 recognizer?.stopListening()
                 voskService?.stop() // результат придёт в onFinalResult
+                capture?.requestStop() // Groq: запись завершится, и речь уйдёт на распознавание
             }
             Status.SPEAKING -> {
                 speechDone = null
@@ -223,6 +238,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         recognizer?.cancel()
         voskDone = true
         stopVosk()
+        stopCapture()
         handleText(text)
     }
 
@@ -234,6 +250,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         recognizer?.cancel()
         voskDone = true
         stopVosk()
+        stopCapture()
         _home.value = HomeUi()
     }
 
@@ -262,7 +279,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 ?.firstOrNull()
                 .orEmpty()
-            if (text.isBlank()) onNothingHeard() else handleText(text)
+            if (text.isBlank()) onNothingHeard() else handleText(text, "Google")
         }
 
         override fun onError(error: Int) {
@@ -298,7 +315,162 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun startListening() {
-        if (settings.engine.value == SpeechEngine.VOSK) startVosk() else startGoogle()
+        when (settings.engine.value) {
+            SpeechEngine.GROQ -> startGroq()
+            SpeechEngine.VOSK -> startVosk()
+            SpeechEngine.GOOGLE -> startGoogle()
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Groq (облако) с автоматическим переходом на запасные движки
+    // ------------------------------------------------------------------
+
+    private fun stopCapture() {
+        capture?.requestStop()
+        captureJob?.cancel()
+        capture = null
+        captureJob = null
+    }
+
+    /** Офлайн-вариант, если облако невозможно использовать: Vosk, а без него — Google. */
+    private fun startOffline() {
+        if (models.state.value is ModelState.Ready) startVosk() else startGoogle()
+    }
+
+    private fun startGroq() {
+        val key = settings.groqKey.value
+        if (key.isBlank()) {
+            startOffline()
+            return
+        }
+        stopVosk()
+        recognizer?.cancel()
+        stopCapture()
+
+        val cap = AudioCapture()
+        capture = cap
+        _home.update { it.copy(status = Status.LISTENING, partial = "") }
+
+        captureJob = viewModelScope.launch {
+            val pcm = try {
+                withContext(Dispatchers.IO) { cap.record() }
+            } catch (e: Exception) {
+                ensureActive()
+                capture = null
+                showError("Ошибка записи звука: ${e.message}")
+                return@launch
+            }
+            ensureActive()
+            capture = null
+            if (pcm == null) {
+                onNothingHeard()
+                return@launch
+            }
+
+            _home.update { it.copy(status = Status.PROCESSING, partial = "") }
+            val result = transcribe(key, pcm)
+            ensureActive()
+            when {
+                result == null -> {
+                    // Ни облако, ни офлайн-модель не сработали: включаем встроенный сервис Google.
+                    _home.update {
+                        it.copy(
+                            message = "Облако и офлайн-модель недоступны. Скажите ещё раз — " +
+                                "включаю встроенное распознавание.",
+                            kind = MessageKind.INFO
+                        )
+                    }
+                    startGoogle()
+                }
+                result.text.isBlank() -> onNothingHeard()
+                else -> handleText(result.text, result.source)
+            }
+        }
+    }
+
+    private class Transcript(val text: String, val source: String)
+
+    /** Подсказка для Whisper: названия разделов, чтобы они распознавались точнее. */
+    private fun groqHint(): String {
+        val names = sections.value.joinToString(", ") { it.name.lowercase() }.take(150)
+        return if (names.isBlank()) "Суммы в рублях и копейках."
+        else "Разделы: $names. Суммы в рублях и копейках."
+    }
+
+    /** Цепочка: Groq → Vosk (на той же записи). null — не сработало ничего. */
+    private suspend fun transcribe(key: String, pcm: ByteArray): Transcript? {
+        val hint = groqHint()
+        val reason: String
+        when (val r = withContext(Dispatchers.IO) { GroqClient.transcribe(key, pcm, hint) }) {
+            is GroqClient.Result.Ok ->
+                return Transcript(if (isHallucination(r.text)) "" else r.text, "Groq")
+            is GroqClient.Result.Fail -> reason = when (r.reason) {
+                GroqClient.Reason.NETWORK -> "нет сети"
+                GroqClient.Reason.RATE_LIMIT -> "дневной лимит исчерпан"
+                GroqClient.Reason.AUTH -> "ключ не принят"
+                GroqClient.Reason.BLOCKED -> "доступ запрещён"
+                GroqClient.Reason.OTHER -> "ошибка сервера"
+            }
+        }
+        if (models.state.value is ModelState.Ready) {
+            val text = runCatching { voskTranscribe(pcm) }.getOrNull()
+            if (text != null) return Transcript(text, "Vosk · Groq недоступен: $reason")
+        }
+        return null
+    }
+
+    /** Распознаёт готовую запись моделью Vosk. */
+    private suspend fun voskTranscribe(pcm: ByteArray): String = withContext(Dispatchers.Default) {
+        val model = voskModel ?: Model(models.path).also { voskModel = it }
+        val rec = Recognizer(model, 16000.0f)
+        try {
+            val sb = StringBuilder()
+            var i = 0
+            while (i < pcm.size) {
+                val n = minOf(4000, pcm.size - i)
+                if (rec.acceptWaveForm(pcm.copyOfRange(i, i + n), n)) {
+                    sb.append(jsonField(rec.result, "text")).append(' ')
+                }
+                i += n
+            }
+            sb.append(jsonField(rec.finalResult, "text"))
+            sb.toString().trim()
+        } finally {
+            runCatching { rec.close() }
+        }
+    }
+
+    /** Whisper на тишине и шуме иногда «выдумывает» типовые фразы из субтитров. */
+    private fun isHallucination(text: String): Boolean {
+        val t = text.lowercase()
+        return t.isBlank() || listOf(
+            "субтитры", "продолжение следует", "спасибо за просмотр",
+            "редактор субтитров", "подписывайтесь на канал"
+        ).any { t.contains(it) }
+    }
+
+    /** Кнопка «Проверить» в настройках: ключ рабочий и сервис доступен. */
+    fun testGroq() {
+        val key = settings.groqKey.value
+        if (key.isBlank()) {
+            _groqStatus.value = "Сначала введите ключ."
+            return
+        }
+        _groqStatus.value = "Проверяю…"
+        viewModelScope.launch {
+            val r = withContext(Dispatchers.IO) { GroqClient.check(key) }
+            _groqStatus.value = when (r) {
+                is GroqClient.Result.Ok -> "Работает: ключ принят, сервис доступен."
+                is GroqClient.Result.Fail -> when (r.reason) {
+                    GroqClient.Reason.AUTH -> "Ключ не принят. Проверьте, что скопировали его целиком."
+                    GroqClient.Reason.NETWORK -> "Нет связи с сервисом (${r.message}). Проверьте интернет."
+                    GroqClient.Reason.BLOCKED -> "Доступ запрещён (${r.message}). Возможно, сервис недоступен в вашем регионе."
+                    GroqClient.Reason.RATE_LIMIT -> "Лимит исчерпан (${r.message})."
+                    GroqClient.Reason.OTHER -> "Ошибка (${r.message})."
+                }
+            }
+        }
     }
 
     // ------------------------------------------------------------------
@@ -357,7 +529,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (!lastText.isNullOrBlank()) voskBuffer.append(lastText).append(' ')
         val text = voskBuffer.toString().trim()
         stopVosk()
-        if (text.isBlank()) onNothingHeard() else handleText(text)
+        if (text.isBlank()) onNothingHeard() else handleText(text, "Vosk")
     }
 
     private fun stopVosk() {
@@ -463,8 +635,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun handleText(text: String) {
-        _home.update { it.copy(status = Status.PROCESSING, heard = text, partial = "") }
+    private fun handleText(text: String, source: String = "") {
+        _home.update { it.copy(status = Status.PROCESSING, heard = text, partial = "", source = source) }
         viewModelScope.launch {
             val reply = process(text)
             deliver(reply)
@@ -713,6 +885,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
+        stopCapture()
         stopVosk()
         voskModel?.let { runCatching { it.close() } }
         voskModel = null

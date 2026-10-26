@@ -26,6 +26,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
@@ -35,10 +36,14 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.voicelog.app.MainViewModel
 import com.voicelog.app.data.SpeechEngine
@@ -53,6 +58,9 @@ fun SettingsScreen(vm: MainViewModel) {
     val sections by vm.sections.collectAsState()
     val engine by vm.settings.engine.collectAsState()
     val autoStart by vm.settings.autoStartRecording.collectAsState()
+    val groqKey by vm.settings.groqKey.collectAsState()
+    val groqStatus by vm.groqStatus.collectAsState()
+    var keyInput by remember { mutableStateOf("") }
     val model by vm.modelState.collectAsState()
 
     Scaffold(
@@ -83,6 +91,12 @@ fun SettingsScreen(vm: MainViewModel) {
 
             SettingsCard("Распознавание речи") {
                 ThemeRow(
+                    "Groq — облачный Whisper, самый точный. При сбое сам переключается на Vosk, затем на Google",
+                    engine == SpeechEngine.GROQ
+                ) {
+                    if (groqKey.isNotBlank()) vm.settings.setEngine(SpeechEngine.GROQ)
+                }
+                ThemeRow(
                     "Vosk — офлайн, на телефоне",
                     engine == SpeechEngine.VOSK
                 ) {
@@ -92,6 +106,51 @@ fun SettingsScreen(vm: MainViewModel) {
                     "Google — встроенный сервис",
                     engine == SpeechEngine.GOOGLE
                 ) { vm.settings.setEngine(SpeechEngine.GOOGLE) }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
+
+                Text("Groq (интернет)", style = MaterialTheme.typography.titleSmall)
+                Text(
+                    "Бесплатный ключ: сайт console.groq.com → API Keys → Create API Key. " +
+                        "Лимит обновляется каждый день; когда он исчерпан или нет интернета, " +
+                        "приложение само использует Vosk (на той же записи) или Google.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                OutlinedTextField(
+                    value = keyInput,
+                    onValueChange = { keyInput = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    label = {
+                        Text(
+                            if (groqKey.isBlank()) "Ключ API Groq"
+                            else "Ключ сохранён (…${groqKey.takeLast(4)}). Введите новый, чтобы заменить"
+                        )
+                    }
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        enabled = keyInput.isNotBlank(),
+                        onClick = {
+                            vm.settings.setGroqKey(keyInput)
+                            vm.settings.setEngine(SpeechEngine.GROQ)
+                            keyInput = ""
+                            vm.testGroq()
+                        }
+                    ) { Text("Сохранить") }
+                    if (groqKey.isNotBlank()) {
+                        OutlinedButton(onClick = vm::testGroq) { Text("Проверить") }
+                        OutlinedButton(onClick = {
+                            vm.settings.setGroqKey("")
+                            if (engine == SpeechEngine.GROQ) vm.settings.setEngine(SpeechEngine.GOOGLE)
+                        }) { Text("Удалить") }
+                    }
+                }
+                if (groqStatus.isNotBlank()) {
+                    Text(groqStatus, style = MaterialTheme.typography.bodyMedium)
+                }
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
 
