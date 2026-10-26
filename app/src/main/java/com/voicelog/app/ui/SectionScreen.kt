@@ -2,6 +2,7 @@
 
 package com.voicelog.app.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -54,6 +55,7 @@ import androidx.compose.ui.unit.dp
 import com.voicelog.app.MainViewModel
 import com.voicelog.app.data.LogEntry
 import com.voicelog.app.data.Section
+import com.voicelog.app.data.isNotes
 import com.voicelog.app.util.Fmt
 import com.voicelog.app.util.localDate
 import java.time.DayOfWeek
@@ -73,6 +75,7 @@ fun SectionScreen(vm: MainViewModel, id: Long, onBack: () -> Unit) {
     var shift by rememberSaveable { mutableIntStateOf(0) } // 0 — текущий период, -1 — предыдущий…
     var adding by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf<LogEntry?>(null) }
+    var editingEntry by remember { mutableStateOf<LogEntry?>(null) }
 
     val sec = section
     if (sec == null) {
@@ -85,6 +88,11 @@ fun SectionScreen(vm: MainViewModel, id: Long, onBack: () -> Unit) {
                 Text("Раздел не найден", color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
+        return
+    }
+
+    if (sec.isNotes) {
+        NotesSectionScreen(vm = vm, section = sec, entries = entries, onBack = onBack)
         return
     }
 
@@ -231,7 +239,8 @@ fun SectionScreen(vm: MainViewModel, id: Long, onBack: () -> Unit) {
                         date = LocalDate.ofEpochDay(day.key),
                         items = day.value,
                         section = sec,
-                        onDelete = { deleting = it }
+                        onDelete = { deleting = it },
+                        onEdit = { editingEntry = it }
                     )
                 }
             }
@@ -245,6 +254,18 @@ fun SectionScreen(vm: MainViewModel, id: Long, onBack: () -> Unit) {
             onAdd = { description, cents ->
                 vm.addEntry(sec.id, description, cents)
                 adding = false
+            }
+        )
+    }
+
+    editingEntry?.let { entry ->
+        EditEntryDialog(
+            entry = entry,
+            unit = sec.unit,
+            onDismiss = { editingEntry = null },
+            onSave = { description, cents ->
+                vm.updateEntry(entry.copy(description = description, valueCents = cents))
+                editingEntry = null
             }
         )
     }
@@ -273,7 +294,7 @@ fun SectionScreen(vm: MainViewModel, id: Long, onBack: () -> Unit) {
 }
 
 @Composable
-private fun SectionTopBar(title: String, onBack: () -> Unit) {
+internal fun SectionTopBar(title: String, onBack: () -> Unit) {
     TopAppBar(
         title = { Text(title) },
         navigationIcon = {
@@ -307,7 +328,8 @@ private fun DayBlock(
     date: LocalDate,
     items: List<LogEntry>,
     section: Section,
-    onDelete: (LogEntry) -> Unit
+    onDelete: (LogEntry) -> Unit,
+    onEdit: (LogEntry) -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
@@ -327,6 +349,7 @@ private fun DayBlock(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .clickable { onEdit(entry) }
                             .padding(start = 16.dp, end = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -419,6 +442,54 @@ private fun AddEntryDialog(unit: String, onDismiss: () -> Unit, onAdd: (String, 
                 enabled = cents != null,
                 onClick = { onAdd(description.trim(), cents ?: 0L) }
             ) { Text("Добавить") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
+    )
+}
+
+@Composable
+private fun EditEntryDialog(
+    entry: LogEntry,
+    unit: String,
+    onDismiss: () -> Unit,
+    onSave: (String, Long) -> Unit
+) {
+    var description by remember { mutableStateOf(entry.description) }
+    var value by remember {
+        mutableStateOf(
+            java.math.BigDecimal(entry.valueCents).movePointLeft(2).stripTrailingZeros().toPlainString()
+        )
+    }
+    val cents = Fmt.parseCents(value)
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = MaterialTheme.colorScheme.surface,
+        title = { Text("Изменить запись") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedTextField(
+                    value = description,
+                    onValueChange = { description = it },
+                    label = { Text("Описание") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = { value = it },
+                    label = { Text(if (unit.isBlank()) "Количество" else "Количество / сумма, $unit") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                    isError = value.isNotBlank() && cents == null,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = cents != null,
+                onClick = { onSave(description.trim(), cents ?: 0L) }
+            ) { Text("Сохранить") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } }
     )

@@ -1,5 +1,6 @@
 package com.voicelog.app.data
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
 import androidx.room.ForeignKey
 import androidx.room.Index
@@ -15,8 +16,16 @@ data class Section(
     /** Слова-подсказки для распознавания через запятую. */
     val keywords: String,
     /** Если число не названо — переспрашивать (true) или считать за 1 (false). */
-    val askValue: Boolean = true
+    val askValue: Boolean = true,
+    /** Тип раздела: NUMBERS — суммы/количества со статистикой, NOTES — короткие заметки. */
+    @ColumnInfo(defaultValue = "'NUMBERS'")
+    val type: String = SectionType.NUMBERS.name
 )
+
+enum class SectionType { NUMBERS, NOTES }
+
+/** Раздел с заметками (а не с суммами и количествами). */
+val Section.isNotes: Boolean get() = type == SectionType.NOTES.name
 
 /**
  * Запись в разделе. Значение хранится в сотых долях (254,55 ₽ -> 25455),

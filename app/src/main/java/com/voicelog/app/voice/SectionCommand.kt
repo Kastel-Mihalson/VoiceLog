@@ -11,8 +11,16 @@ package com.voicelog.app.voice
  */
 object SectionCommand {
 
-    /** Разобранная команда создания. unit == null — единица не названа (или не поняли). */
-    data class Create(val name: String, val unit: String?, val keywords: List<String>)
+    /**
+     * Разобранная команда создания. unit == null — единица не названа (или не поняли).
+     * notes: true — раздел заметок, false — раздел с числами, null — тип не назван.
+     */
+    data class Create(
+        val name: String,
+        val unit: String?,
+        val keywords: List<String>,
+        val notes: Boolean? = null
+    )
 
     private val TRIGGER = Regex(
         "(?<![\\p{L}\\p{N}])" +
@@ -27,40 +35,67 @@ object SectionCommand {
         "(?<![\\p{L}\\p{N}])(?:ключев\\p{L}*\\s+)?слов\\p{L}*(?![\\p{L}\\p{N}])\\s*"
     )
 
+    // «заметки» / «тип заметки» и «статистика» / «числа» — тип раздела.
+    private val NOTES_MARK = Regex(
+        "(?<![\\p{L}\\p{N}])(?:тип\\s+)?(?:заметк\\p{L}*|записк\\p{L}*)(?![\\p{L}\\p{N}])\\s*"
+    )
+    private val NUMBERS_MARK = Regex(
+        "(?<![\\p{L}\\p{N}])(?:тип\\s+)?(?:статистик\\p{L}*|числ\\p{L}*)(?![\\p{L}\\p{N}])\\s*"
+    )
+
     private val NAME_FILLER = setOf("пожалуйста", "и", "тоже")
+
+    private class Mark(val kind: Char, val range: IntRange)
 
     /** Возвращает null, если фраза — не команда создания раздела. */
     fun parse(raw: String): Create? {
         val text = VoiceParser.normalize(raw)
         val rest = TRIGGER.find(text)?.groupValues?.get(1) ?: return null
 
-        val um = UNIT_MARK.find(rest)
-        val wm = WORDS_MARK.find(rest)
+        val all = ArrayList<Mark>()
+        UNIT_MARK.find(rest)?.let { all.add(Mark('U', it.range)) }
+        WORDS_MARK.find(rest)?.let { all.add(Mark('W', it.range)) }
+        NOTES_MARK.find(rest)?.let { all.add(Mark('N', it.range)) }
+        NUMBERS_MARK.find(rest)?.let { all.add(Mark('S', it.range)) }
+        all.sortBy { it.range.first }
+        // Слово «заметки» в самом начале — это название раздела («Создай раздел Заметки»), а не тип.
+        val marks = all.filter { m ->
+            m.kind == 'U' || m.kind == 'W' || rest.substring(0, m.range.first).isNotBlank()
+        }
 
-        val cut = listOfNotNull(um?.range?.first, wm?.range?.first).minOrNull() ?: rest.length
+        val cut = marks.firstOrNull()?.range?.first ?: rest.length
         val nameWords = rest.substring(0, cut).trim().split(' ')
             .filter { it.isNotBlank() && it !in NAME_FILLER }
         val name = nameWords.joinToString(" ").take(40).trim()
             .replaceFirstChar { it.uppercase() }
 
         var unit: String? = null
-        if (um != null) {
-            val start = um.range.last + 1
-            val end = if (wm != null && wm.range.first > um.range.first) wm.range.first else rest.length
-            if (start <= end) unit = mapUnit(rest.substring(start, end))
-        }
-
         var keywords = emptyList<String>()
-        if (wm != null) {
-            val start = wm.range.last + 1
-            val end = if (um != null && um.range.first > wm.range.first) um.range.first else rest.length
-            if (start <= end) {
-                keywords = rest.substring(start, end).trim().split(' ')
+        var notes: Boolean? = null
+        for ((i, m) in marks.withIndex()) {
+            val start = m.range.last + 1
+            val end = marks.getOrNull(i + 1)?.range?.first ?: rest.length
+            val segment = if (start <= end) rest.substring(start, end) else ""
+            when (m.kind) {
+                'U' -> if (unit == null) unit = mapUnit(segment)
+                'W' -> keywords = segment.trim().split(' ')
                     .filter { it.length >= 3 && it !in NAME_FILLER }
                     .distinct()
+                'N' -> notes = true
+                'S' -> notes = false
             }
         }
-        return Create(name, unit, keywords)
+        return Create(name, unit, keywords, notes)
+    }
+
+    /** Ответ на вопрос «заметки или числа?»: true — заметки, false — числа, null — не понял. */
+    fun parseType(raw: String): Boolean? {
+        val t = norm(raw)
+        return when {
+            Regex("(заметк|записк|текст)").containsMatchIn(t) -> true
+            Regex("(числ|статистик|сумм|количеств|цифр|деньг)").containsMatchIn(t) -> false
+            else -> null
+        }
     }
 
     /**

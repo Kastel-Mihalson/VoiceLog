@@ -46,6 +46,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.voicelog.app.MainViewModel
+import com.voicelog.app.data.isNotes
 import com.voicelog.app.data.SpeechEngine
 import com.voicelog.app.data.ThemeMode
 import com.voicelog.app.voice.ModelState
@@ -57,7 +58,6 @@ fun SettingsScreen(vm: MainViewModel) {
     val auto by vm.settings.autoListen.collectAsState()
     val sections by vm.sections.collectAsState()
     val engine by vm.settings.engine.collectAsState()
-    val autoStart by vm.settings.autoStartRecording.collectAsState()
     val groqKey by vm.settings.groqKey.collectAsState()
     val groqStatus by vm.groqStatus.collectAsState()
     var keyInput by remember { mutableStateOf("") }
@@ -204,13 +204,6 @@ fun SettingsScreen(vm: MainViewModel) {
 
             SettingsCard("Голос") {
                 SwitchRow(
-                    title = "Запись при открытии",
-                    subtitle = "Микрофон включается сразу, как только вы открыли приложение",
-                    checked = autoStart,
-                    onChange = vm.settings::setAutoStartRecording
-                )
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
-                SwitchRow(
                     title = "Озвучивать ответы",
                     subtitle = "Приложение голосом подтверждает запись и задаёт вопросы",
                     checked = speak,
@@ -262,6 +255,15 @@ fun SettingsScreen(vm: MainViewModel) {
                         "Единицы: рубли, раз, штуки, минуты, часы, дни, километры, граммы, литры и другие.",
                     style = MaterialTheme.typography.bodyMedium
                 )
+                Text("6. Заметки и статистика", fontWeight = FontWeight.SemiBold)
+                Text(
+                    "Первое слово задаёт режим. «Заметка. Рагу — хороший ресторан, около Мадагаскара» " +
+                        "запишет текст дословно в раздел заметок «Рестораны» (раздел находится по названию " +
+                        "или словам-подсказкам в тексте; если не понятен — приложение спросит). " +
+                        "«Статистика. Оплатил телефон 22000 рублей» запишет сумму в раздел с числами. " +
+                        "Раздел заметок: «Создай раздел Рестораны заметки».",
+                    style = MaterialTheme.typography.bodyMedium
+                )
             }
 
             SettingsCard("Ваши разделы и слова-подсказки") {
@@ -274,8 +276,9 @@ fun SettingsScreen(vm: MainViewModel) {
                     }
                     Text(s.name, style = MaterialTheme.typography.titleSmall)
                     Text(
-                        "Единица: ${s.unit.ifBlank { "—" }} · " +
-                            if (s.askValue) "число уточняется" else "без числа = 1",
+                        if (s.isNotes) "Заметки" else
+                            "Единица: ${s.unit.ifBlank { "—" }} · " +
+                                if (s.askValue) "число уточняется" else "без числа = 1",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -284,7 +287,7 @@ fun SettingsScreen(vm: MainViewModel) {
                         style = MaterialTheme.typography.bodyMedium
                     )
                     Text(
-                        "Пример: «Добавь в раздел ${s.name.lowercase()} …»",
+                        if (s.isNotes) "Пример: «Заметка. ${s.name} — …»" else "Пример: «Добавь в раздел ${s.name.lowercase()} …»",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

@@ -9,7 +9,9 @@ data class SectionRef(
     val name: String,
     val unit: String,
     val keywords: String,
-    val askValue: Boolean
+    val askValue: Boolean,
+    /** Раздел-заметки (текст без сумм), а не раздел с числами. */
+    val isNotes: Boolean = false
 )
 
 sealed interface ParseResult {
@@ -179,16 +181,16 @@ object VoiceParser {
         class Ambiguous(val sections: List<SectionRef>) : Pick
     }
 
-    private fun stem(word: String): String = when {
+    internal fun stem(word: String): String = when {
         word.length >= 7 -> word.dropLast(2)
         word.length >= 4 -> word.dropLast(1)
         else -> word
     }
 
-    private fun normalizeAlias(raw: String): String =
+    internal fun normalizeAlias(raw: String): String =
         raw.lowercase().replace('ё', 'е').replace(Regex("[^\\p{L}\\p{N} ]"), " ").trim()
 
-    private fun aliasPattern(alias: String): String =
+    internal fun aliasPattern(alias: String): String =
         alias.split(' ').filter { it.isNotBlank() }
             .joinToString("\\s+") { Regex.escape(stem(it)) + "\\p{L}*" }
 

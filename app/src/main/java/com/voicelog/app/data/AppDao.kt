@@ -34,8 +34,18 @@ interface AppDao {
     @Query("SELECT * FROM log_entries ORDER BY timestamp DESC")
     fun allEntries(): Flow<List<LogEntry>>
 
+    /** Заметки из всех разделов-заметок — для общей ленты. */
+    @Query(
+        "SELECT e.* FROM log_entries e INNER JOIN sections s ON s.id = e.sectionId " +
+            "WHERE s.type = 'NOTES' ORDER BY e.timestamp DESC"
+    )
+    fun noteEntries(): Flow<List<LogEntry>>
+
     @Insert
     suspend fun insertEntry(entry: LogEntry): Long
+
+    @Update
+    suspend fun updateEntry(entry: LogEntry)
 
     @Delete
     suspend fun deleteEntry(entry: LogEntry)
