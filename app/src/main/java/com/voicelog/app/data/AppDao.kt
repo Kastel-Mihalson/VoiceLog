@@ -41,6 +41,18 @@ interface AppDao {
     )
     fun noteEntries(): Flow<List<LogEntry>>
 
+    @Query("SELECT * FROM tasks ORDER BY createdAt")
+    fun tasks(): Flow<List<Task>>
+
+    @Insert
+    suspend fun insertTask(task: Task): Long
+
+    @Update
+    suspend fun updateTask(task: Task)
+
+    @Delete
+    suspend fun deleteTask(task: Task)
+
     @Insert
     suspend fun insertEntry(entry: LogEntry): Long
 

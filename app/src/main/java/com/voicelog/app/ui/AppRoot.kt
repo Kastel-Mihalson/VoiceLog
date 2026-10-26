@@ -11,8 +11,8 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.Settings
@@ -62,7 +62,7 @@ private enum class Tab(val title: String, val icon: ImageVector) {
     NOTES("Заметки", Icons.Default.Edit),
     STATS("Статистика", Icons.Default.BarChart),
     VOICE("Голос", Icons.Default.Mic),
-    RECORDS("Записи", Icons.AutoMirrored.Filled.List),
+    TASKS("Задачи", Icons.Default.CheckCircle),
     SETTINGS("Настройки", Icons.Default.Settings)
 }
 
@@ -70,16 +70,16 @@ private val VOICE_PAGE = Tab.VOICE.ordinal
 
 @Composable
 private fun AppNav(vm: MainViewModel) {
-    // Открытый раздел внутри страниц «Статистика» и «Записи» (null — список).
+    // Открытый раздел внутри страниц «Статистика» и «Заметки» (null — список разделов).
     var statsId by rememberSaveable { mutableStateOf<Long?>(null) }
-    var recordsId by rememberSaveable { mutableStateOf<Long?>(null) }
+    var notesId by rememberSaveable { mutableStateOf<Long?>(null) }
     val pager = rememberPagerState(initialPage = VOICE_PAGE) { Tab.entries.size }
     val scope = rememberCoroutineScope()
 
-    BackHandler(enabled = pager.currentPage != VOICE_PAGE || statsId != null || recordsId != null) {
+    BackHandler(enabled = pager.currentPage != VOICE_PAGE || statsId != null || notesId != null) {
         when {
             pager.currentPage == Tab.STATS.ordinal && statsId != null -> statsId = null
-            pager.currentPage == Tab.RECORDS.ordinal && recordsId != null -> recordsId = null
+            pager.currentPage == Tab.NOTES.ordinal && notesId != null -> notesId = null
             else -> scope.launch { pager.animateScrollToPage(VOICE_PAGE) }
         }
     }
@@ -120,7 +120,14 @@ private fun AppNav(vm: MainViewModel) {
                 beyondViewportPageCount = Tab.entries.size
             ) { page ->
                 when (Tab.entries[page]) {
-                    Tab.NOTES -> NotesScreen(vm = vm)
+                    Tab.NOTES -> {
+                        val id = notesId
+                        when (id) {
+                            null -> NotesScreen(vm = vm, onOpen = { notesId = it })
+                            ALL_NOTES -> AllNotesScreen(vm = vm, onBack = { notesId = null })
+                            else -> SectionScreen(vm = vm, id = id, onBack = { notesId = null })
+                        }
+                    }
 
                     Tab.STATS -> {
                         val id = statsId
@@ -133,14 +140,7 @@ private fun AppNav(vm: MainViewModel) {
 
                     Tab.VOICE -> HomeScreen(vm = vm)
 
-                    Tab.RECORDS -> {
-                        val id = recordsId
-                        if (id == null) {
-                            RecordsScreen(vm = vm, onOpenSection = { recordsId = it })
-                        } else {
-                            SectionScreen(vm = vm, id = id, onBack = { recordsId = null })
-                        }
-                    }
+                    Tab.TASKS -> TasksScreen(vm = vm)
 
                     Tab.SETTINGS -> SettingsScreen(vm = vm)
                 }

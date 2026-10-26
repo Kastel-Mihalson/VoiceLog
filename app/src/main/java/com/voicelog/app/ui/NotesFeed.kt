@@ -3,8 +3,6 @@
 package com.voicelog.app.ui
 
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -24,7 +22,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.Icon
@@ -39,11 +36,11 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.voicelog.app.MainViewModel
 import com.voicelog.app.data.LogEntry
@@ -53,17 +50,14 @@ import com.voicelog.app.util.Fmt
 import com.voicelog.app.util.localDate
 import java.time.LocalDate
 
-/** Страница «Заметки»: все заметки из всех разделов-заметок, новые сверху, с фильтром по разделу. */
+/** Страница «Заметки»: список разделов-заметок. Отдельная карточка открывает все заметки сразу. */
 @Composable
-fun NotesScreen(vm: MainViewModel) {
-    val notes by vm.noteEntries.collectAsState()
+fun NotesScreen(vm: MainViewModel, onOpen: (Long) -> Unit) {
     val sections by vm.sections.collectAsState()
+    val notes by vm.noteEntries.collectAsState()
+    val actions = rememberSectionActions(notes = true)
     val noteSections = remember(sections) { sections.filter { it.isNotes } }
-    val names = remember(sections) { sections.associate { it.id to it.name } }
-    var filter by rememberSaveable { mutableStateOf<Long?>(null) }
-    // Если выбранный раздел удалили — показываем все.
-    val active = filter?.takeIf { id -> noteSections.any { it.id == id } }
-    val shown = remember(notes, active) { if (active == null) notes else notes.filter { it.sectionId == active } }
+    val perSection = remember(notes) { notes.groupBy { it.sectionId } }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -73,35 +67,103 @@ fun NotesScreen(vm: MainViewModel) {
                 title = { Text("Заметки") },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
             )
+        },
+        floatingActionButton = {
+            ExtendedFloatingActionButton(
+                onClick = actions::create,
+                icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                text = { Text("Новый раздел") }
+            )
         }
     ) { inner ->
-        Column(Modifier.fillMaxSize().padding(inner)) {
-            if (noteSections.isNotEmpty()) {
-                Row(
-                    modifier = Modifier
-                        .horizontalScroll(rememberScrollState())
-                        .padding(horizontal = 16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    FilterChip(selected = active == null, onClick = { filter = null }, label = { Text("Все") })
-                    noteSections.forEach { sec ->
-                        FilterChip(
-                            selected = active == sec.id,
-                            onClick = { filter = sec.id },
-                            label = { Text(sec.name) }
+        if (noteSections.isEmpty()) {
+            Text(
+                "Разделов заметок пока нет.\nНажмите «Новый раздел» или скажите: «Создай раздел Рестораны заметки».",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(inner).padding(24.dp)
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize().padding(inner),
+                contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 96.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                item(key = "all") {
+                    Card(
+                        onClick = { onOpen(ALL_NOTES) },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(20.dp),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+                    ) {
+                        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text(
+                                "Все заметки",
+                                style = MaterialTheme.typography.titleLarge,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                            Text(
+                                "Всего: ${notes.size}",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
+                    }
+                }
+                items(noteSections, key = { it.id }) { section ->
+                    val list = perSection[section.id].orEmpty()
+                    SectionListCard(
+                        title = section.name,
+                        keywords = section.keywords,
+                        onClick = { onOpen(section.id) },
+                        onEdit = { actions.edit(section) },
+                        onDelete = { actions.delete(section) }
+                    ) {
+                        Text(
+                            "Заметок: ${list.size}",
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.primary
                         )
+                        list.firstOrNull()?.let {
+                            Text(
+                                it.description,
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
             }
-            NoteList(
-                vm = vm,
-                notes = shown,
-                sectionNames = names,
-                emptyText = if (noteSections.isEmpty())
-                    "Разделов заметок пока нет.\nСоздайте на вкладке «Записи» или скажите: «Создай раздел Рестораны заметки»."
-                else "Заметок пока нет.\nСкажите на вкладке «Голос»: «Рагу — хороший ресторан. Заметка»."
-            )
         }
+    }
+    SectionActionDialogs(vm, actions, sections)
+}
+
+/** Условный номер «раздела» для экрана со всеми заметками. */
+const val ALL_NOTES = -1L
+
+/** Все заметки из всех разделов, новые сверху. */
+@Composable
+fun AllNotesScreen(vm: MainViewModel, onBack: () -> Unit) {
+    val notes by vm.noteEntries.collectAsState()
+    val sections by vm.sections.collectAsState()
+    val names = remember(sections) { sections.associate { it.id to it.name } }
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.background,
+        contentWindowInsets = WindowInsets(0, 0, 0, 0),
+        topBar = { SectionTopBar("Все заметки", onBack) }
+    ) { inner ->
+        NoteList(
+            vm = vm,
+            notes = notes,
+            sectionNames = names,
+            emptyText = "Заметок пока нет.\nСкажите на вкладке «Голос»: «Рагу — хороший ресторан. Заметка».",
+            modifier = Modifier.padding(inner)
+        )
     }
 }
 

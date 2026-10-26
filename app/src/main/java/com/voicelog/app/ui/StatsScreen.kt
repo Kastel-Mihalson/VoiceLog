@@ -12,9 +12,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -45,6 +46,7 @@ private class Totals(val today: Long, val week: Long, val month: Long)
 fun StatsScreen(vm: MainViewModel, onOpenSection: (Long) -> Unit) {
     val sections by vm.sections.collectAsState()
     val entries by vm.allEntries.collectAsState()
+    val actions = rememberSectionActions(notes = false)
     val numeric = remember(sections) { sections.filter { !it.isNotes } }
 
     val totals = remember(entries) {
@@ -68,11 +70,18 @@ fun StatsScreen(vm: MainViewModel, onOpenSection: (Long) -> Unit) {
                 title = { Text("Статистика") },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background)
             )
+        },
+        floatingActionButton = {
+            ExtendedFloatingActionButton(
+                onClick = actions::create,
+                icon = { Icon(Icons.Default.Add, contentDescription = null) },
+                text = { Text("Новый раздел") }
+            )
         }
     ) { inner ->
         if (numeric.isEmpty()) {
             Text(
-                "Разделов статистики пока нет.\nСоздайте на вкладке «Записи» или скажите: «Создай раздел Игры».",
+                "Разделов статистики пока нет.\nНажмите «Новый раздел» или скажите: «Создай раздел Игры».",
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(inner).padding(24.dp)
@@ -80,33 +89,37 @@ fun StatsScreen(vm: MainViewModel, onOpenSection: (Long) -> Unit) {
         } else {
             LazyColumn(
                 modifier = Modifier.fillMaxSize().padding(inner),
-                contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 24.dp),
+                contentPadding = PaddingValues(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 96.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 items(numeric, key = { it.id }) { section ->
-                    StatsCard(section, totals[section.id], onClick = { onOpenSection(section.id) })
+                    StatsCard(
+                        section = section,
+                        t = totals[section.id],
+                        onClick = { onOpenSection(section.id) },
+                        onEdit = { actions.edit(section) },
+                        onDelete = { actions.delete(section) }
+                    )
                 }
             }
         }
     }
+    SectionActionDialogs(vm, actions, sections)
 }
 
 @Composable
-private fun StatsCard(section: Section, t: Totals?, onClick: () -> Unit) {
-    Card(
+private fun StatsCard(section: Section, t: Totals?, onClick: () -> Unit, onEdit: () -> Unit, onDelete: () -> Unit) {
+    SectionListCard(
+        title = section.name,
+        keywords = section.keywords,
         onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+        onEdit = onEdit,
+        onDelete = onDelete
     ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(section.name, style = MaterialTheme.typography.titleLarge)
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-                Cell("Сегодня", Fmt.value(t?.today ?: 0, section.unit), Modifier.weight(1f))
-                Cell("Неделя", Fmt.value(t?.week ?: 0, section.unit), Modifier.weight(1f))
-                Cell("Месяц", Fmt.value(t?.month ?: 0, section.unit), Modifier.weight(1f))
-            }
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+            Cell("Сегодня", Fmt.value(t?.today ?: 0, section.unit), Modifier.weight(1f))
+            Cell("Неделя", Fmt.value(t?.week ?: 0, section.unit), Modifier.weight(1f))
+            Cell("Месяц", Fmt.value(t?.month ?: 0, section.unit), Modifier.weight(1f))
         }
     }
 }
