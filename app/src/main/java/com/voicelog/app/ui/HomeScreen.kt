@@ -14,6 +14,13 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import com.voicelog.app.EntryMode
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -75,6 +82,7 @@ private val ListeningColor = Color(0xFFE5484D)
 @Composable
 fun HomeScreen(vm: MainViewModel) {
     val ui by vm.home.collectAsState()
+    val mode by vm.entryMode.collectAsState()
     val ctx = LocalContext.current
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -131,17 +139,29 @@ fun HomeScreen(vm: MainViewModel) {
                         .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    InfoArea(ui)
+                    InfoArea(ui, mode)
                 }
             }
 
             Spacer(Modifier.height(12.dp))
 
-            MicButton(listening = ui.status == Status.LISTENING, onClick = onMic)
+            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                MicButton(listening = ui.status == Status.LISTENING, onClick = onMic)
+                ModeWheel(
+                    selected = mode,
+                    enabled = ui.status == Status.IDLE,
+                    onSelect = vm::setEntryMode,
+                    modifier = Modifier.align(Alignment.CenterEnd)
+                )
+            }
 
             Text(
                 text = when (ui.status) {
-                    Status.IDLE -> "Нажмите на кнопку и скажите команду"
+                    Status.IDLE -> when (mode) {
+                        EntryMode.TASK -> "Нажмите и скажите задачу"
+                        EntryMode.NOTE -> "Нажмите и скажите заметку"
+                        EntryMode.STATS -> "Нажмите и скажите запись со значением"
+                    }
                     Status.LISTENING -> if (ui.partial.isBlank()) "Слушаю…" else ui.partial
                     Status.PROCESSING -> "Обрабатываю…"
                     Status.SPEAKING -> "Говорю… (нажмите, чтобы ответить сразу)"
@@ -177,7 +197,7 @@ fun HomeScreen(vm: MainViewModel) {
 }
 
 @Composable
-private fun InfoArea(ui: HomeUi) {
+private fun InfoArea(ui: HomeUi, mode: EntryMode) {
     if (ui.heard.isNotBlank()) {
         Text(
             text = "Вы сказали: «${ui.heard}»" + if (ui.source.isBlank()) "" else "\n(${ui.source})",
@@ -208,12 +228,12 @@ private fun InfoArea(ui: HomeUi) {
             )
         }
     } else if (ui.heard.isBlank()) {
-        HintCard()
+        HintCard(mode)
     }
 }
 
 @Composable
-private fun HintCard() {
+private fun HintCard(mode: EntryMode) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(20.dp),
@@ -221,21 +241,117 @@ private fun HintCard() {
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Text("Скажите фразу, а в конце — тип записи:", style = MaterialTheme.typography.titleSmall)
+            Text("Тип записи: ${mode.title}", style = MaterialTheme.typography.titleSmall)
+            when (mode) {
+                EntryMode.TASK -> {
+                    Text("• «Позвонить в банк»", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Фраза целиком попадёт в список задач.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                EntryMode.NOTE -> {
+                    Text(
+                        "• «Рагу — хороший ресторан около Мадагаскара»",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Text(
+                        "Раздел заметок определится по названию или словам в тексте; если не ясно — приложение уточнит.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                EntryMode.STATS -> {
+                    Text("• «Купил творог за 120 рублей»", style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        "Раздел определится по словам, число — из фразы; если чего-то не хватит — приложение уточнит.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
             Text(
-                "• «Купил творог за 120 рублей. Статистика»",
-                style = MaterialTheme.typography.bodyMedium
-            )
-            Text(
-                "• «Рагу — хороший ресторан около Мадагаскара. Заметка»",
-                style = MaterialTheme.typography.bodyMedium
-            )
-            Text(
-                "Если тип или раздел не понятен, приложение уточнит. Чтобы прервать — скажите «отмена».",
+                "Тип выбирается слайдером справа от кнопки. Чтобы прервать диалог — скажите «отмена».",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
+    }
+}
+
+/** Вертикальный «барабан» типов записи: листается по кругу свайпом, нажатием или стрелками. */
+@Composable
+private fun ModeWheel(
+    selected: EntryMode,
+    enabled: Boolean,
+    onSelect: (EntryMode) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val all = EntryMode.entries
+    val i = all.indexOf(selected)
+    val prev = all[(i - 1 + all.size) % all.size]
+    val next = all[(i + 1) % all.size]
+    val stepPx = with(androidx.compose.ui.platform.LocalDensity.current) { 32.dp.toPx() }
+    var drag by remember { mutableStateOf(0f) }
+    val dim = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 0.75f else 0.35f)
+
+    Column(
+        modifier = modifier
+            .width(104.dp)
+            .pointerInput(selected, enabled) {
+                detectVerticalDragGestures(
+                    onDragStart = { drag = 0f },
+                    onVerticalDrag = { change, amount ->
+                        change.consume()
+                        if (!enabled) return@detectVerticalDragGestures
+                        drag += amount
+                        if (drag <= -stepPx) {
+                            drag = 0f
+                            onSelect(next)
+                        } else if (drag >= stepPx) {
+                            drag = 0f
+                            onSelect(prev)
+                        }
+                    }
+                )
+            },
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Icon(
+            Icons.Default.KeyboardArrowUp,
+            contentDescription = "Предыдущий тип",
+            tint = dim,
+            modifier = Modifier.size(22.dp).clickable(enabled = enabled) { onSelect(prev) }
+        )
+        Text(
+            prev.title,
+            style = MaterialTheme.typography.bodySmall,
+            color = dim,
+            maxLines = 1,
+            modifier = Modifier.padding(vertical = 4.dp).clickable(enabled = enabled) { onSelect(prev) }
+        )
+        Text(
+            selected.title,
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onBackground,
+            maxLines = 1,
+            modifier = Modifier.padding(vertical = 6.dp)
+        )
+        Text(
+            next.title,
+            style = MaterialTheme.typography.bodySmall,
+            color = dim,
+            maxLines = 1,
+            modifier = Modifier.padding(vertical = 4.dp).clickable(enabled = enabled) { onSelect(next) }
+        )
+        Icon(
+            Icons.Default.KeyboardArrowDown,
+            contentDescription = "Следующий тип",
+            tint = dim,
+            modifier = Modifier.size(22.dp).clickable(enabled = enabled) { onSelect(next) }
+        )
     }
 }
 

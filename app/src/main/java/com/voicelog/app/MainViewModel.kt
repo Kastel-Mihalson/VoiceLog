@@ -38,12 +38,18 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.Locale
 
 enum class Status { IDLE, LISTENING, PROCESSING, SPEAKING }
+
+/** Тип записи, выбранный слайдером на странице «Голос». */
+enum class EntryMode(val title: String) {
+    TASK("Задача"), NOTE("Заметка"), STATS("Статистика")
+}
 
 enum class MessageKind { NONE, SAVED, QUESTION, INFO, ERROR }
 
@@ -83,8 +89,6 @@ internal sealed interface Pending {
     data class NeedNoteSection(val text: String, val candidates: List<SectionRef>) : Pending
     /** Раздел назван, но не сказано, какого он типа. */
     data class NeedType(val cmd: SectionCommand.Create) : Pending
-    /** Фраза записана, но неясно: заметка это или статистика. */
-    data class NeedEntryType(val text: String) : Pending
     data class NeedValue(val section: SectionRef, val description: String) : Pending
 }
 
@@ -100,6 +104,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     val allEntries: StateFlow<List<LogEntry>> =
         dao.allEntries().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** Выбранный слайдером тип записи. */
+    val entryMode: StateFlow<EntryMode> = settings.entryMode
+        .map { name -> runCatching { EntryMode.valueOf(name) }.getOrDefault(EntryMode.NOTE) }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, EntryMode.NOTE)
+
+    fun setEntryMode(mode: EntryMode) {
+        if (_home.value.status == Status.IDLE) settings.setEntryMode(mode.name)
+    }
 
     val tasks: StateFlow<List<Task>> =
         dao.tasks().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -597,6 +610,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             pending = null
             return Reply("Отменено.", MessageKind.INFO)
         }
+        if (pending == null && entryMode.value == EntryMode.TASK) return addTaskByVoice(text)
+
         val list = dao.sectionsOnce()
         val refs = list.map { it.toRef() }
 
@@ -641,7 +656,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
 
-            null -> route(text, refs, list)
+            null -> byMode(text, refs, list)
 
             is Pending.NeedType -> {
                 val notes = SectionCommand.parseType(text)
@@ -653,21 +668,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     )
                 } else {
                     handleCreate(p.cmd.copy(notes = notes), list, refs)
-                }
-            }
-
-            is Pending.NeedEntryType -> {
-                val notes = SectionCommand.parseType(text)
-                when (notes) {
-                    null -> Reply(
-                        "Не понял. Скажите «заметка» или «статистика».",
-                        MessageKind.QUESTION,
-                        listenNext = true
-                    )
-                    else -> {
-                        pending = null
-                        byKind(if (notes) NoteParser.Kind.NOTES else NoteParser.Kind.NUMBERS, p.text, refs, list)
-                    }
                 }
             }
 
@@ -716,34 +716,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /**
-     * Тип записи определяется по последнему слову фразы («… Статистика» / «… Заметка»).
-     * Запасной вариант — первое слово. Если слова нет, но раздел назван явно — берётся
-     * тип этого раздела. Иначе приложение спрашивает.
-     */
-    private suspend fun route(text: String, refs: List<SectionRef>, list: List<Section>): Reply {
-        val mode = NoteParser.detectTrailing(text)
-            ?: NoteParser.detectMode(text).takeIf { it.kind != NoteParser.Kind.NONE }
-        if (mode != null) return byKind(mode.kind, mode.rest, refs, list)
-
-        val named = VoiceParser.findSection(text, refs)
-        if (named != null) {
-            return if (named.isNotes) {
-                handleNote(NoteParser.parse(text, refs.filter { it.isNotes }, forced = named))
-            } else {
-                numbers(text, refs.filter { !it.isNotes }, list)
-            }
-        }
-        return askEntryType(text)
+    /** Тип записи задаёт слайдер на странице «Голос». Лишнее слово в конце («… Заметка») отбрасывается. */
+    private suspend fun byMode(text: String, refs: List<SectionRef>, list: List<Section>): Reply {
+        val kind = if (entryMode.value == EntryMode.NOTE) NoteParser.Kind.NOTES else NoteParser.Kind.NUMBERS
+        val rest = NoteParser.detectTrailing(text)?.takeIf { it.kind == kind }?.rest ?: text
+        return byKind(kind, rest, refs, list)
     }
 
-    private fun askEntryType(text: String): Reply {
-        pending = Pending.NeedEntryType(text)
-        return Reply(
-            "Куда записать: в заметки или в статистику? Скажите «заметка» или «статистика».",
-            MessageKind.QUESTION,
-            listenNext = true
-        )
+    /** Режим «Задача»: фраза целиком становится задачей, ничего не распознаётся. */
+    private suspend fun addTaskByVoice(text: String): Reply {
+        val t = text.trim().trimEnd('.', ',', ';').trim().replaceFirstChar { it.uppercase() }
+        if (t.isBlank()) return Reply("Не расслышал задачу. Повторите.", MessageKind.INFO)
+        dao.insertTask(Task(text = t, createdAt = System.currentTimeMillis()))
+        return Reply("Задача добавлена: $t", MessageKind.SAVED, spoken = "Добавил задачу")
     }
 
     private suspend fun byKind(
