@@ -37,6 +37,15 @@ class SettingsStore(context: Context) {
     )
     val engine: StateFlow<SpeechEngine> = _engine
 
+    /** Выбранный на странице «Голос» тип записи: TASK, NOTE или STATS. */
+    private val _entryMode = MutableStateFlow(prefs.getString("entry_mode", null) ?: "NOTE")
+    val entryMode: StateFlow<String> = _entryMode
+
+    fun setEntryMode(value: String) {
+        _entryMode.value = value
+        prefs.edit().putString("entry_mode", value).apply()
+    }
+
     fun setEngine(value: SpeechEngine) {
         _engine.value = value
         prefs.edit().putString("engine", value.name).apply()
