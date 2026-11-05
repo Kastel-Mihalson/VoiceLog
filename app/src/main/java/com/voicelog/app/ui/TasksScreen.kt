@@ -2,7 +2,11 @@
 
 package com.voicelog.app.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.height
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -31,8 +35,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
@@ -46,6 +48,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextDecoration
@@ -74,13 +77,11 @@ fun TasksScreen(vm: MainViewModel) {
         }
     ) { inner ->
         Column(Modifier.fillMaxSize().padding(inner)) {
-            TabRow(
-                selectedTabIndex = tab,
-                containerColor = MaterialTheme.colorScheme.background
-            ) {
-                Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Список") })
-                Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("История") })
-            }
+            TasksSegmented(
+                selected = tab,
+                onSelect = { tab = it },
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+            )
             if (tab == 0) TaskList(vm, tasks) else TaskHistory(tasks)
         }
     }
@@ -146,27 +147,68 @@ private fun TaskList(vm: MainViewModel, tasks: List<Task>) {
 }
 
 @Composable
-private fun TaskRow(vm: MainViewModel, task: Task) {
+private fun TasksSegmented(selected: Int, onSelect: (Int) -> Unit, modifier: Modifier = Modifier) {
+    val scheme = MaterialTheme.colorScheme
+    val titles = listOf("Список", "История")
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
-            .clickable { vm.setTaskDone(task, !task.done) },
-        verticalAlignment = Alignment.CenterVertically
+            .clip(RoundedCornerShape(percent = 50))
+            .background(scheme.surfaceContainerHigh)
+            .padding(4.dp)
     ) {
-        Checkbox(checked = task.done, onCheckedChange = { vm.setTaskDone(task, it) })
-        Text(
-            task.text,
-            style = MaterialTheme.typography.bodyLarge,
-            textDecoration = if (task.done) TextDecoration.LineThrough else null,
-            color = if (task.done) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier.weight(1f)
-        )
-        IconButton(onClick = { vm.deleteTask(task) }) {
-            Icon(
-                Icons.Default.Delete,
-                contentDescription = "Удалить задачу",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant
+        titles.forEachIndexed { index, title ->
+            val active = index == selected
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(40.dp)
+                    .clip(RoundedCornerShape(percent = 50))
+                    .background(if (active) scheme.surface else Color.Transparent)
+                    .clickable(enabled = !active) { onSelect(index) },
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                    color = if (active) scheme.primary else scheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun TaskRow(vm: MainViewModel, task: Task) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { vm.setTaskDone(task, !task.done) }
+                .padding(start = 4.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Checkbox(checked = task.done, onCheckedChange = { vm.setTaskDone(task, it) })
+            Text(
+                task.text,
+                style = MaterialTheme.typography.bodyLarge,
+                textDecoration = if (task.done) TextDecoration.LineThrough else null,
+                color = if (task.done) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f)
             )
+            IconButton(onClick = { vm.deleteTask(task) }) {
+                Icon(
+                    Icons.Default.Delete,
+                    contentDescription = "Удалить задачу",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
     }
 }

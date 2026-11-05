@@ -271,8 +271,9 @@ private fun SettingsCard(title: String, content: @Composable ColumnScope.() -> U
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
-                title,
-                style = MaterialTheme.typography.titleMedium,
+                title.uppercase(),
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.primary
             )
             content()

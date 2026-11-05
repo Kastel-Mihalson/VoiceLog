@@ -303,9 +303,10 @@ private fun NoteDay(
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Text(
             Fmt.dayTitle(date),
-            style = MaterialTheme.typography.titleMedium,
+            style = MaterialTheme.typography.labelLarge,
             fontWeight = FontWeight.SemiBold,
-            modifier = Modifier.padding(start = 4.dp)
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 4.dp, top = 4.dp)
         )
         Card(
             modifier = Modifier.fillMaxWidth(),

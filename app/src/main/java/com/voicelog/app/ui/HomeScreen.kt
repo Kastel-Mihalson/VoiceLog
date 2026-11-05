@@ -44,6 +44,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -72,6 +73,7 @@ import androidx.core.content.ContextCompat
 import com.voicelog.app.HomeUi
 import com.voicelog.app.MainViewModel
 import com.voicelog.app.MessageKind
+import com.voicelog.app.SectionChoice
 import com.voicelog.app.Status
 import com.voicelog.app.data.LogEntry
 import com.voicelog.app.data.Section
@@ -89,6 +91,17 @@ fun HomeScreen(vm: MainViewModel) {
     val allEntries by vm.allEntries.collectAsState()
     val sections by vm.sections.collectAsState()
     val ctx = LocalContext.current
+
+    ui.review?.let { draft ->
+        ReviewScreen(
+            draft = draft,
+            sections = sections,
+            onConfirm = vm::confirmDraft,
+            onUpdate = vm::updateDraft,
+            onRetry = vm::discardDraft
+        )
+        return
+    }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -146,6 +159,7 @@ fun HomeScreen(vm: MainViewModel) {
                 ) {
                     HomeSummary(allEntries, sections)
                     RecentEntries(allEntries, sections)
+                    ui.choice?.let { ChoiceCard(it, onPick = vm::pickSection, onCancel = vm::cancelDialog) }
                     InfoArea(ui, mode)
                 }
             }
@@ -197,6 +211,33 @@ fun HomeScreen(vm: MainViewModel) {
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                 keyboardActions = KeyboardActions(onSend = { sendTyped() })
             )
+        }
+    }
+}
+
+@Composable
+private fun ChoiceCard(choice: SectionChoice, onPick: (Long) -> Unit, onCancel: () -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = scheme.secondaryContainer,
+            contentColor = scheme.onSecondaryContainer
+        )
+    ) {
+        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(choice.title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+            choice.options.forEach { option ->
+                OutlinedButton(
+                    onClick = { onPick(option.id) },
+                    modifier = Modifier.fillMaxWidth().height(48.dp),
+                    shape = RoundedCornerShape(percent = 50)
+                ) {
+                    Text(option.name, style = MaterialTheme.typography.labelLarge)
+                }
+            }
+            TextButton(onClick = onCancel) { Text("Отмена") }
         }
     }
 }

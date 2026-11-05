@@ -53,6 +53,20 @@ enum class EntryMode(val title: String) {
 
 enum class MessageKind { NONE, SAVED, QUESTION, INFO, ERROR }
 
+/** Распознанная запись с числом, ждущая подтверждения пользователя. */
+data class ReviewDraft(
+    val heard: String,
+    val sectionId: Long,
+    val sectionName: String,
+    val unit: String,
+    val description: String,
+    val valueCents: Long,
+    val timestamp: Long
+)
+
+/** Варианты разделов, из которых пользователь выбирает нажатием. */
+data class SectionChoice(val title: String, val options: List<SectionRef>)
+
 /** Всё, что показывает главный экран. */
 data class HomeUi(
     val status: Status = Status.IDLE,
@@ -66,7 +80,10 @@ data class HomeUi(
     /** Приложение ждёт ответа на уточняющий вопрос. */
     val awaiting: Boolean = false,
     /** Чем распознана последняя фраза (Vosk или Google). */
-    val source: String = ""
+    val source: String = "",
+    /** Запись, которую нужно проверить перед сохранением. */
+    val review: ReviewDraft? = null,
+    val choice: SectionChoice? = null
 )
 
 internal data class Reply(
@@ -308,6 +325,67 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         _home.value = HomeUi()
     }
 
+    fun confirmDraft() {
+        val draft = _home.value.review ?: return
+        viewModelScope.launch {
+            dao.insertEntry(
+                LogEntry(
+                    sectionId = draft.sectionId,
+                    description = draft.description,
+                    valueCents = draft.valueCents,
+                    timestamp = draft.timestamp
+                )
+            )
+        }
+        val what = if (draft.description.isBlank()) "" else "${draft.description} — "
+        _home.update {
+            it.copy(
+                review = null,
+                heard = "",
+                message = "Добавлено в «${draft.sectionName}»: $what${Fmt.value(draft.valueCents, draft.unit)}",
+                kind = MessageKind.SAVED
+            )
+        }
+    }
+
+    fun updateDraft(description: String, valueCents: Long, section: Section) {
+        _home.update {
+            val draft = it.review ?: return@update it
+            it.copy(
+                review = draft.copy(
+                    description = description,
+                    valueCents = valueCents,
+                    sectionId = section.id,
+                    sectionName = section.name,
+                    unit = section.unit
+                )
+            )
+        }
+    }
+
+    fun discardDraft() {
+        _home.update { it.copy(review = null, heard = "", message = "", kind = MessageKind.NONE) }
+    }
+
+    fun pickSection(sectionId: Long) {
+        val p = pending ?: return
+        val option = _home.value.choice?.options?.firstOrNull { it.id == sectionId } ?: return
+        _home.update { it.copy(choice = null) }
+        viewModelScope.launch {
+            val list = dao.sectionsOnce()
+            val reply = when (p) {
+                is Pending.NeedSection -> handleParse(VoiceParser.complete(option, p.description, p.cents), list)
+                is Pending.NeedNoteSection -> saveNote(option, p.text)
+                else -> return@launch
+            }
+            deliver(reply)
+        }
+    }
+
+    private fun offerChoice(title: String, options: List<SectionRef>) {
+        _home.update { it.copy(choice = SectionChoice(title, options)) }
+    }
+
     fun showError(message: String) {
         _home.update { it.copy(status = Status.IDLE, message = message, kind = MessageKind.ERROR) }
     }
@@ -538,7 +616,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun handleText(text: String, source: String = "") {
-        _home.update { it.copy(status = Status.PROCESSING, heard = text, partial = "", source = source) }
+        _home.update { it.copy(status = Status.PROCESSING, heard = text, partial = "", source = source, choice = null) }
         viewModelScope.launch {
             val reply = process(text)
             deliver(reply)
@@ -766,13 +844,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         )
         is NoteParser.Result.NeedSection -> {
             pending = Pending.NeedNoteSection(r.text, r.candidates)
-            val names = r.candidates.joinToString(if (r.ambiguous) " или " else ", ") { "«${it.name}»" }
-            Reply(
-                if (r.ambiguous) "Заметка подходит к нескольким разделам: $names. В какой записать?"
-                else "В какой раздел записать заметку? Доступны: $names.",
-                MessageKind.QUESTION,
-                listenNext = true
-            )
+            if (r.ambiguous) {
+                offerChoice("Заметка подходит к нескольким разделам. В какой записать?", r.candidates)
+                Reply("Выберите раздел для заметки.", MessageKind.QUESTION)
+            } else {
+                val names = r.candidates.joinToString(", ") { "«${it.name}»" }
+                Reply(
+                    "В какой раздел записать заметку? Доступны: $names.",
+                    MessageKind.QUESTION,
+                    listenNext = true
+                )
+            }
         }
     }
 
@@ -866,14 +948,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             pending = Pending.NeedSection(result.description, result.valueCents, raw)
             val what = if (result.description.isBlank()) "" else " «${result.description}»"
             if (result.candidates.isNotEmpty()) {
-                // Одинаковые слова распознавания у нескольких разделов — не угадываем.
-                val names = result.candidates.joinToString(" или ") { "«${it.name}»" }
+                offerChoice("В какой раздел добавить$what?", result.candidates)
                 Reply(
-                    "Фраза подходит к нескольким разделам: $names. В какой добавить$what?",
+                    "Выберите раздел$what.",
                     MessageKind.QUESTION,
-                    spoken = "Фраза подходит к нескольким разделам: " +
-                        result.candidates.joinToString(" или ") { it.name } + ". В какой добавить?",
-                    listenNext = true
+                    spoken = "В какой раздел добавить?"
                 )
             } else {
                 Reply(
@@ -892,20 +971,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
         is ParseResult.Ready -> {
             pending = null
-            dao.insertEntry(
-                LogEntry(
-                    sectionId = result.section.id,
-                    description = result.description,
-                    valueCents = result.valueCents,
-                    timestamp = System.currentTimeMillis()
+            _home.update {
+                it.copy(
+                    review = ReviewDraft(
+                        heard = it.heard,
+                        sectionId = result.section.id,
+                        sectionName = result.section.name,
+                        unit = result.section.unit,
+                        description = result.description,
+                        valueCents = result.valueCents,
+                        timestamp = System.currentTimeMillis()
+                    ),
+                    message = "",
+                    kind = MessageKind.NONE,
+                    awaiting = false
                 )
-            )
-            val value = Fmt.value(result.valueCents, result.section.unit)
-            val what = if (result.description.isBlank()) "" else "${result.description} — "
+            }
             Reply(
-                text = "Добавлено в «${result.section.name}»: $what$value",
-                kind = MessageKind.SAVED,
-                spoken = "Добавил в ${result.section.name}. " +
+                text = "",
+                kind = MessageKind.NONE,
+                spoken = "Проверьте. " +
                     (if (result.description.isBlank()) "" else "${result.description}, ") +
                     Fmt.spoken(result.valueCents, result.section.unit)
             )
