@@ -15,15 +15,11 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import com.voicelog.app.EntryMode
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -70,12 +66,19 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.voicelog.app.HomeUi
 import com.voicelog.app.MainViewModel
 import com.voicelog.app.MessageKind
 import com.voicelog.app.Status
+import com.voicelog.app.data.LogEntry
+import com.voicelog.app.data.Section
+import com.voicelog.app.data.isNotes
+import com.voicelog.app.util.Fmt
+import com.voicelog.app.util.localDate
+import java.time.LocalDate
 
 private val ListeningColor = Color(0xFFE5484D)
 
@@ -83,6 +86,8 @@ private val ListeningColor = Color(0xFFE5484D)
 fun HomeScreen(vm: MainViewModel) {
     val ui by vm.home.collectAsState()
     val mode by vm.entryMode.collectAsState()
+    val allEntries by vm.allEntries.collectAsState()
+    val sections by vm.sections.collectAsState()
     val ctx = LocalContext.current
 
     val permissionLauncher = rememberLauncherForActivityResult(
@@ -139,21 +144,21 @@ fun HomeScreen(vm: MainViewModel) {
                         .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
+                    HomeSummary(allEntries, sections)
+                    RecentEntries(allEntries, sections)
                     InfoArea(ui, mode)
                 }
             }
 
             Spacer(Modifier.height(12.dp))
 
-            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                MicButton(listening = ui.status == Status.LISTENING, onClick = onMic)
-                ModeWheel(
-                    selected = mode,
-                    enabled = ui.status == Status.IDLE,
-                    onSelect = vm::setEntryMode,
-                    modifier = Modifier.align(Alignment.CenterEnd)
-                )
-            }
+            ModeSegmented(
+                selected = mode,
+                enabled = ui.status == Status.IDLE,
+                onSelect = vm::setEntryMode
+            )
+            Spacer(Modifier.height(8.dp))
+            MicButton(listening = ui.status == Status.LISTENING, onClick = onMic)
 
             Text(
                 text = when (ui.status) {
@@ -280,78 +285,118 @@ private fun HintCard(mode: EntryMode) {
     }
 }
 
-/** Вертикальный «барабан» типов записи: листается по кругу свайпом, нажатием или стрелками. */
 @Composable
-private fun ModeWheel(
-    selected: EntryMode,
-    enabled: Boolean,
-    onSelect: (EntryMode) -> Unit,
-    modifier: Modifier = Modifier
-) {
-    val all = EntryMode.entries
-    val i = all.indexOf(selected)
-    val prev = all[(i - 1 + all.size) % all.size]
-    val next = all[(i + 1) % all.size]
-    val stepPx = with(androidx.compose.ui.platform.LocalDensity.current) { 32.dp.toPx() }
-    var drag by remember { mutableStateOf(0f) }
-    val dim = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 0.75f else 0.35f)
-
-    Column(
-        modifier = modifier
-            .width(104.dp)
-            .pointerInput(selected, enabled) {
-                detectVerticalDragGestures(
-                    onDragStart = { drag = 0f },
-                    onVerticalDrag = { change, amount ->
-                        change.consume()
-                        if (!enabled) return@detectVerticalDragGestures
-                        drag += amount
-                        if (drag <= -stepPx) {
-                            drag = 0f
-                            onSelect(next)
-                        } else if (drag >= stepPx) {
-                            drag = 0f
-                            onSelect(prev)
-                        }
-                    }
-                )
-            },
-        horizontalAlignment = Alignment.CenterHorizontally
+private fun ModeSegmented(selected: EntryMode, enabled: Boolean, onSelect: (EntryMode) -> Unit) {
+    val scheme = MaterialTheme.colorScheme
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(percent = 50))
+            .background(scheme.surfaceContainerHigh)
+            .padding(4.dp)
     ) {
-        Icon(
-            Icons.Default.KeyboardArrowUp,
-            contentDescription = "Предыдущий тип",
-            tint = dim,
-            modifier = Modifier.size(22.dp).clickable(enabled = enabled) { onSelect(prev) }
-        )
+        EntryMode.entries.forEach { item ->
+            val active = item == selected
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .height(44.dp)
+                    .clip(RoundedCornerShape(percent = 50))
+                    .background(if (active) scheme.primary else Color.Transparent)
+                    .clickable(enabled = enabled && !active) { onSelect(item) },
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = item.title,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = if (active) FontWeight.SemiBold else FontWeight.Normal,
+                    color = when {
+                        active -> scheme.onPrimary
+                        enabled -> scheme.onSurfaceVariant
+                        else -> scheme.onSurfaceVariant.copy(alpha = 0.5f)
+                    },
+                    maxLines = 1
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HomeSummary(entries: List<LogEntry>, sections: List<Section>) {
+    val today = LocalDate.now()
+    val todays = entries.filter { it.localDate() == today }
+    val units = sections.associate { it.id to it.unit }
+    val spent = todays.filter { units[it.sectionId] == "₽" }.sumOf { it.valueCents }
+    val scheme = MaterialTheme.colorScheme
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(22.dp),
+        colors = CardDefaults.cardColors(containerColor = scheme.primary, contentColor = scheme.onPrimary)
+    ) {
+        Column(modifier = Modifier.padding(18.dp)) {
+            Text("Сегодня", style = MaterialTheme.typography.labelLarge)
+            Text(
+                Fmt.value(spent, "₽"),
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold
+            )
+            val count = todays.size.toLong()
+            Text(
+                "$count ${Fmt.plural(count, "запись", "записи", "записей")}",
+                style = MaterialTheme.typography.bodyMedium
+            )
+        }
+    }
+}
+
+@Composable
+private fun RecentEntries(entries: List<LogEntry>, sections: List<Section>) {
+    if (entries.isEmpty()) return
+    val byId = sections.associateBy { it.id }
+    val scheme = MaterialTheme.colorScheme
+    Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
-            prev.title,
-            style = MaterialTheme.typography.bodySmall,
-            color = dim,
-            maxLines = 1,
-            modifier = Modifier.padding(vertical = 4.dp).clickable(enabled = enabled) { onSelect(prev) }
-        )
-        Text(
-            selected.title,
-            style = MaterialTheme.typography.titleMedium,
+            "Последние записи",
+            style = MaterialTheme.typography.titleSmall,
             fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onBackground,
-            maxLines = 1,
-            modifier = Modifier.padding(vertical = 6.dp)
+            color = scheme.onBackground
         )
-        Text(
-            next.title,
-            style = MaterialTheme.typography.bodySmall,
-            color = dim,
-            maxLines = 1,
-            modifier = Modifier.padding(vertical = 4.dp).clickable(enabled = enabled) { onSelect(next) }
-        )
-        Icon(
-            Icons.Default.KeyboardArrowDown,
-            contentDescription = "Следующий тип",
-            tint = dim,
-            modifier = Modifier.size(22.dp).clickable(enabled = enabled) { onSelect(next) }
-        )
+        entries.sortedByDescending { it.timestamp }.take(3).forEach { entry ->
+            val section = byId[entry.sectionId]
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = scheme.surface)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            entry.description,
+                            style = MaterialTheme.typography.bodyLarge,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            "${section?.name ?: "Раздел"} · ${Fmt.time(entry.timestamp)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = scheme.onSurfaceVariant
+                        )
+                    }
+                    if (section != null && !section.isNotes) {
+                        Text(
+                            Fmt.value(entry.valueCents, section.unit),
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = scheme.primary
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
